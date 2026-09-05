@@ -1,0 +1,13 @@
+﻿geoconvert 统一 CLI：OBJ / OSGB / TIF → 3D Tiles。
+
+用法:
+  python -m geoconvert obj  <input> <output> [options]    # OBJ 分块 → 三级 LOD b3dm
+  python -m geoconvert osgb <input> --out DIR [options]   # OSGB (Smart3D) → b3dm LOD 树
+  python -m geoconvert tif  <tif> <output> [options]      # 正射影像 → 贴图 3D 平面
+
+定位方式（obj/osgb 通用）:
+  --transform-from TILESET  复制参考 tileset.json 的 root.transform（与既有模型重合）
+  --lat X --lon Y           ENU 原点经纬度
+  （都不给时 obj 默认赤道 ENU 经应用内模型调整定位；osgb 读 metadata.xml）
+
+

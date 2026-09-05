@@ -1,0 +1,20 @@
+# 构建产物与安装包
+build/
+dist/
+out/
+
+# 第三方参考代码（94MB，仅供本地开发参考）
+tools/ref/
+
+# 手册生成的依赖
+tools/manual/node_modules/
+
+# 临时文件
+__pycache__/
+*.pyc
+debug.log
+*.log
+tools/_t/
+
+# 用户本地配置（含天地图个人 key，不随仓库分发）
+config.json
