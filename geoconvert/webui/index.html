@@ -28,6 +28,15 @@ header{display:flex;align-items:baseline;gap:14px;margin-bottom:18px;border-bott
 h1{margin:0;font-size:22px;letter-spacing:.06em;color:var(--cy)}
 h1 .v{font-size:12px;color:var(--mut);letter-spacing:.2em}
 .sub{color:var(--dim);font-size:13px}
+.hdr-upd{margin-left:auto;display:flex;align-items:center;gap:10px}
+.hdr-upd .ver{color:var(--mut);font:12.5px Consolas,monospace}
+.hdr-upd button{padding:4px 14px;font-size:12.5px}
+#upd-banner{display:flex;align-items:center;gap:14px;background:#0e2a1acc;border:1px solid #1d6f42;
+  border-radius:8px;padding:9px 14px;margin:-6px 0 14px;font-size:13.5px;color:var(--txt)}
+#upd-banner.hidden{display:none}
+#upd-banner button.primary{padding:4px 16px}
+#upd-close{padding:3px 9px;font-size:12px;color:var(--dim)}
+#upd-close:hover{color:var(--txt)}
 .card{background:linear-gradient(180deg,#0d1730cc,#0b1222cc);border:1px solid var(--line2);
   border-radius:10px;padding:14px 16px;margin-bottom:14px;backdrop-filter:blur(4px)}
 h2{margin:0 0 10px;font-size:13px;letter-spacing:.18em;color:var(--dim);text-transform:uppercase;font-weight:600}
@@ -119,7 +128,13 @@ footer#bar b{color:var(--txt)}
   <header>
     <h1>geoconvert <span class="v">GUI</span></h1>
     <span class="sub">OBJ / OSGB / TIF → 3D Tiles · 大文件自动切块 + LOD 分级</span>
+    <span class="hdr-upd"><span id="ver-badge" class="ver"></span><button id="btn-update" title="检查 GitHub 上的最新版本">检查更新</button></span>
   </header>
+  <div id="upd-banner" class="hidden">
+    <span id="upd-text"></span>
+    <button id="upd-go" class="primary">前往下载</button>
+    <button id="upd-close" title="关闭提示">✕</button>
+  </div>
 
   <div class="layout">
     <aside class="side">
@@ -664,9 +679,45 @@ $$('button.openbtn').forEach(b => b.addEventListener('click', async () => {
 (async () => {
   try {
     const r = await fetch('/api/config');
-    if (r.ok) $('#tdt-key').value = (await r.json()).tianditu_key || '';
+    if (r.ok){
+      const j = await r.json();
+      $('#tdt-key').value = j.tianditu_key || '';
+      if (j.version) $('#ver-badge').textContent = 'v' + j.version;
+    }
   } catch(e){ /* 忽略 */ }
 })();
+// 软件更新：启动后自动静默检查一次；header 按钮手动检查
+let _updUrl = '';
+async function checkUpdate(manual){
+  const btn = $('#btn-update'), old = btn.textContent;
+  btn.disabled = true;
+  if (manual){
+    btn.textContent = '检查中…';
+    $('#upd-banner').classList.add('hidden');
+  }
+  try {
+    const r = await fetch('/api/check-update' + (manual ? '?force=1' : ''));
+    const j = await r.json();
+    if (j.version) $('#ver-badge').textContent = 'v' + j.version;
+    if (j.update && j.latest){
+      _updUrl = j.url || '';
+      $('#upd-text').textContent = '发现新版本 ' + j.latest + '（当前 v' + j.version + '），建议下载新版安装包覆盖安装。';
+      $('#upd-banner').classList.remove('hidden');
+    } else if (manual){
+      alert(j.error ? (j.error + '\n可稍后重试，或手动访问 GitHub Releases 页面。')
+                    : '当前已是最新版本 v' + j.version + '。');
+    }
+  } catch(e){
+    if (manual) alert('检查更新失败：' + e + '\n可稍后重试，或手动访问 GitHub Releases 页面。');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+$('#btn-update').addEventListener('click', () => checkUpdate(true));
+$('#upd-go').addEventListener('click', () => { if (_updUrl) window.open(_updUrl, '_blank'); });
+$('#upd-close').addEventListener('click', () => $('#upd-banner').classList.add('hidden'));
+setTimeout(() => checkUpdate(false), 2000);
 $('#tdt-save').addEventListener('click', async () => {
   try {
     const r = await fetch('/api/config', {method:'POST',

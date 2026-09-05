@@ -17,11 +17,54 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
 from .params import build_argv, detect_format, validate
+
+APP_VERSION = '1.4.2'
+RELEASES_API = 'https://api.github.com/repos/Darling5/geoconvert/releases/latest'
+RELEASES_URL = 'https://github.com/Darling5/geoconvert/releases/latest'
+
+_update_cache = {'t': 0.0, 'data': None}
+
+
+def _ver_tuple(v):
+    v = str(v).strip().lstrip('vV')
+    parts = []
+    for seg in v.split('.'):
+        m = re.match(r'(\d+)', seg.strip())
+        parts.append(int(m.group(1)) if m else 0)
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
+
+
+def check_update(force=False):
+    """比对 GitHub 最新 Release。结果缓存 30 分钟；网络失败返回 error。"""
+    now = time.time()
+    if not force and _update_cache['data'] and now - _update_cache['t'] < 1800:
+        return _update_cache['data']
+    out = {'version': APP_VERSION, 'latest': None, 'url': RELEASES_URL,
+           'update': False, 'error': None}
+    try:
+        req = urllib.request.Request(
+            RELEASES_API, headers={'User-Agent': 'geoconvert/' + APP_VERSION,
+                                   'Accept': 'application/vnd.github+json'})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = json.loads(r.read().decode('utf-8'))
+        latest = str(data.get('tag_name') or '').strip()
+        if latest:
+            out['latest'] = latest
+            out['url'] = data.get('html_url') or RELEASES_URL
+            out['update'] = _ver_tuple(latest) > _ver_tuple(APP_VERSION)
+    except Exception as e:
+        out['error'] = '网络检查失败：%s' % e
+    _update_cache['data'] = out
+    _update_cache['t'] = now
+    return out
 
 
 class State:
@@ -127,10 +170,11 @@ def load_config():
         with open(_config_path(), encoding='utf-8-sig') as f:
             cfg = json.load(f)
         if isinstance(cfg, dict):
-            return {'tianditu_key': str(cfg.get('tianditu_key') or '')}
+            return {'tianditu_key': str(cfg.get('tianditu_key') or ''),
+                    'version': APP_VERSION}
     except (OSError, ValueError):
         pass
-    return {'tianditu_key': ''}
+    return {'tianditu_key': '', 'version': APP_VERSION}
 
 
 def save_config(cfg):
@@ -400,6 +444,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {'models': find_models_json()})
         elif u.path == '/api/config':
             self._send(200, load_config())
+        elif u.path == '/api/check-update':
+            force = (q.get('force') or [''])[0] in ('1', 'true')
+            self._send(200, check_update(force))
         else:
             self._send(404, {'error': 'not found'})
 
