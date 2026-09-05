@@ -121,6 +121,37 @@ button.openbtn{padding:7px 12px;font-size:13px}
 footer#bar{position:fixed;left:0;right:0;bottom:0;background:#0b1222ee;border-top:1px solid var(--line2);
   padding:7px 18px;font-size:13px;color:var(--dim);backdrop-filter:blur(6px)}
 footer#bar b{color:var(--txt)}
+/* ---------- 登录 / 配额 / 线索弹窗 ---------- */
+.lic-box{display:flex;align-items:center;gap:10px}
+.lic-user{display:flex;align-items:center;gap:8px;background:#0e1726;border:1px solid var(--line2);
+  border-radius:8px;padding:4px 12px;font-size:13px}
+.lic-user b{color:var(--txt);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lic-quota{color:var(--dim);font-size:12px}
+.lic-quota em{font-style:normal;color:#4dd0e1;font-weight:600}
+.lic-quota.warn em{color:#ffd04d}
+.lic-quota.bad em{color:#ff6b6b}
+.lic-logout{background:none;border:none;color:var(--dim);cursor:pointer;font-size:12px;padding:2px 4px}
+.lic-logout:hover{color:#ff6b6b}
+.modal-ov{position:fixed;inset:0;background:#060a12cc;display:flex;align-items:center;
+  justify-content:center;z-index:100;backdrop-filter:blur(3px)}
+.modal-ov.hidden{display:none}
+.modal{background:#101a2b;border:1px solid var(--line2);border-radius:12px;padding:24px 26px;
+  width:400px;max-width:92vw;max-height:88vh;overflow:auto}
+.modal h3{font-size:16px;margin-bottom:4px}
+.modal .tip{font-size:12.5px;color:var(--dim);margin-bottom:14px;line-height:1.5}
+.modal label{display:block;font-size:12.5px;color:var(--dim);margin:10px 0 4px}
+.modal input,.modal textarea{width:100%;background:#0b1220;border:1px solid var(--line2);
+  border-radius:6px;color:var(--txt);padding:8px 10px;font-size:14px}
+.modal textarea{resize:vertical;min-height:60px;font-family:inherit}
+.modal .row{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
+.modal .tabs{display:flex;gap:8px;margin-bottom:6px}
+.modal .tabs button{flex:1}
+.modal .tabs button.on{background:#1c4a5e;border-color:#4dd0e1;color:#4dd0e1;font-weight:600}
+.lic-err{color:#ff6b6b;font-size:13px;margin-top:10px;min-height:18px}
+.biz-card{background:#0e2233;border:1px solid #1d4862;border-radius:8px;padding:10px 14px;
+  font-size:13px;line-height:1.7;margin:10px 0}
+.biz-card b{color:#4dd0e1}
+.bonus-note{color:#4dff9f;font-size:12.5px;margin-top:8px}
 </style>
 </head>
 <body>
@@ -128,6 +159,7 @@ footer#bar b{color:var(--txt)}
   <header>
     <h1>geoconvert <span class="v">GUI</span></h1>
     <span class="sub">OBJ / OSGB / TIF → 3D Tiles · 大文件自动切块 + LOD 分级</span>
+    <span id="lic-box" class="lic-box"><button id="btn-login" class="primary">登录 / 注册</button></span>
     <span class="hdr-upd"><span id="ver-badge" class="ver"></span><button id="btn-update" title="检查 GitHub 上的最新版本">检查更新</button></span>
   </header>
   <div id="upd-banner" class="hidden">
@@ -300,6 +332,60 @@ footer#bar b{color:var(--txt)}
 </div>
 
 <footer id="bar">geoconvert · OBJ / OSGB / TIF → 3D Tiles ｜ 地图位置转 WGS-84 ｜ 3D 预览三轴调整 ｜ 一键注册进 <b>models.json</b></footer>
+
+<!-- 登录 / 注册弹窗 -->
+<div id="lic-modal" class="modal-ov hidden">
+  <div class="modal">
+    <h3 id="lic-title">登录</h3>
+    <div class="tip">注册即送 <b style="color:#4dd0e1">12 次/年 + 2 次/月</b> 免费转换额度，转换失败自动退还次数。</div>
+    <div class="tabs" id="lic-tabs">
+      <button id="ltab-login" class="on">登录</button>
+      <button id="ltab-reg">注册</button>
+    </div>
+    <label>用户名</label>
+    <input id="li-user" placeholder="3-32 位字母 / 数字 / 下划线 / 中文" autocomplete="username">
+    <label>密码</label>
+    <input id="li-pass" type="password" placeholder="至少 6 位" autocomplete="current-password">
+    <div id="li-extra" class="hidden">
+      <label>联系电话（选填，便于商务对接）</label>
+      <input id="li-phone" placeholder="手机号 / 微信号">
+      <label>邮箱（选填）</label>
+      <input id="li-email" placeholder="name@example.com">
+      <label>公司 / 单位（选填）</label>
+      <input id="li-company" placeholder="选填">
+    </div>
+    <div id="li-err" class="lic-err"></div>
+    <div class="row">
+      <button id="li-cancel">取消</button>
+      <button id="li-go" class="primary">登录</button>
+    </div>
+  </div>
+</div>
+
+<!-- 次数用完 / 需要商务支持 弹窗 -->
+<div id="lead-modal" class="modal-ov hidden">
+  <div class="modal">
+    <h3 id="lead-title">免费转换次数已用完</h3>
+    <div class="tip" id="lead-tip"></div>
+    <div class="biz-card">
+      <b>深圳振道技术有限公司</b><br>
+      工业级高精度定位与三维可视化方案<br>
+      商务对接：请留下您的联系方式，我们 1 个工作日内与您联系
+    </div>
+    <label>联系方式（电话 / 微信 / 邮箱）*</label>
+    <input id="ld-contact" placeholder="必填">
+    <label>公司 / 单位</label>
+    <input id="ld-company" placeholder="选填">
+    <label>您的需求（如：批量倾斜模型转换、更多转换次数、定制开发）</label>
+    <textarea id="ld-req" placeholder="选填，便于我们针对性跟进"></textarea>
+    <div class="bonus-note" id="lead-bonus">提交后立即获赠 5 次转换额度</div>
+    <div id="ld-err" class="lic-err"></div>
+    <div class="row">
+      <button id="ld-close">稍后再说</button>
+      <button id="ld-go" class="primary">提交并领取次数</button>
+    </div>
+  </div>
+</div>
 
 <script src="preview.js" defer></script>
 <script>
@@ -645,6 +731,7 @@ $('#br-pick').addEventListener('click', () => {
 
 // ---------- 转换 ----------
 $('#start').addEventListener('click', async () => {
+  if (!LIC.logged_in){ openLicModal('login'); return; }
   const body = {
     fmt, src: $('#input').value.trim(), dst: $('#output').value.trim(),
     locMode, lat: $('#lat').value.trim(), lon: $('#lon').value.trim(),
@@ -656,10 +743,20 @@ $('#start').addEventListener('click', async () => {
   let r;
   try { r = await fetch('/api/start', {method:'POST', body: JSON.stringify(body)}); }
   catch(e){ alert('无法连接服务：' + e); return; }
-  const j = await r.json();
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 402){
+    // 门禁：未登录 / 次数不足 / 授权服务器不可达
+    if (j.code === 'login_required') openLicModal('login');
+    else if (j.code === 'offline' || j.code === 'server_error')
+      alert(j.error || '无法连接授权服务器，请检查网络后重试');
+    else openLeadDialog(j.code);
+    refreshLic();
+    return;
+  }
   if (!r.ok || j.error){ alert(j.error || '启动失败'); return; }
   running = true; seq = 0; $('#log').innerHTML = '';
   setControls();
+  refreshLic();
 });
 $('#cancel').addEventListener('click', () => fetch('/api/cancel', {method:'POST'}));
 $('#openout').addEventListener('click', () => fetch('/api/open', {
@@ -755,6 +852,7 @@ async function poll(){
     running = j.running;
     if (j.done && !j.running && wasRunning){
       setControls();
+      refreshLic();  // 转换结束刷新配额（失败/取消已自动退还）
       if (j.code === 0){
         $('#status').textContent = j.lines && j.lines.length ? j.lines[j.lines.length-1].replace('完成：','完成 · ') : '完成';
         $('#openout').disabled = false;
@@ -861,6 +959,142 @@ $('#reg-do').addEventListener('click', async () => {
     regStatus('注册失败：' + e, 'err');
   } finally {
     $('#reg-do').disabled = false;
+  }
+});
+
+// ---------- 账号 / 转换配额 ----------
+let LIC = {logged_in:false, online:true, username:'', quota:null};
+function renderLic(){
+  const box = $('#lic-box');
+  if (!LIC.logged_in){
+    box.innerHTML = '<button id="btn-login" class="primary">登录 / 注册</button>';
+    $('#btn-login').addEventListener('click', () => openLicModal('login'));
+    return;
+  }
+  const q = LIC.quota || {};
+  const ml = q.monthly_left != null ? q.monthly_left : '-';
+  const yl = q.yearly_left != null ? q.yearly_left : '-';
+  let cls = '';
+  if (LIC.quota && (LIC.quota.code !== 'ok')) cls = (ml <= 0 || yl <= 0 || q.expired) ? ' bad' : ' warn';
+  const offline = LIC.online ? '' : '<span style="color:#ffd04d;font-size:12px" title="无法连接授权服务器">⚠ 离线</span> ';
+  box.innerHTML = offline +
+    '<span class="lic-user"><b title="' + esc(LIC.username) + '">' + esc(LIC.username) + '</b>' +
+    '<span class="lic-quota' + cls + '" title="月度 / 年度剩余转换次数">本月 <em>' + ml + '</em> · 年度 <em>' + yl + '</em></span>' +
+    '<button class="lic-logout" title="退出登录">退出</button></span>';
+  box.querySelector('.lic-logout').addEventListener('click', async () => {
+    await fetch('/api/license/logout', {method:'POST'});
+    refreshLic();
+  });
+}
+function esc(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+async function refreshLic(){
+  try {
+    const r = await fetch('/api/license/status');
+    if (r.ok) LIC = await r.json();
+  } catch(e){ LIC.online = false; }
+  renderLic();
+}
+refreshLic();
+
+// 登录 / 注册弹窗
+let licMode = 'login';
+function openLicModal(mode, presetErr){
+  licMode = mode || 'login';
+  $('#lic-modal').classList.remove('hidden');
+  $('#li-err').textContent = presetErr || '';
+  $('#li-pass').value = '';
+  syncLicTabs();
+  setTimeout(() => $('#li-user').focus(), 50);
+}
+function syncLicTabs(){
+  const reg = licMode === 'reg';
+  $('#ltab-reg').classList.toggle('on', reg);
+  $('#ltab-login').classList.toggle('on', !reg);
+  $('#li-extra').classList.toggle('hidden', !reg);
+  $('#lic-title').textContent = reg ? '注册新账号' : '登录';
+  $('#li-go').textContent = reg ? '注册并登录' : '登录';
+}
+$('#ltab-login').addEventListener('click', () => { licMode = 'login'; syncLicTabs(); });
+$('#ltab-reg').addEventListener('click', () => { licMode = 'reg'; syncLicTabs(); });
+$('#li-cancel').addEventListener('click', () => $('#lic-modal').classList.add('hidden'));
+$('#li-go').addEventListener('click', doLicAuth);
+$('#li-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLicAuth(); });
+async function doLicAuth(){
+  const user = $('#li-user').value.trim(), pass = $('#li-pass').value;
+  if (!user || !pass){ $('#li-err').textContent = '请填写用户名和密码'; return; }
+  $('#li-go').disabled = true;
+  $('#li-err').textContent = '';
+  try {
+    let r;
+    if (licMode === 'reg'){
+      r = await fetch('/api/license/register', {method:'POST', body: JSON.stringify({
+        username: user, password: pass,
+        phone: $('#li-phone').value.trim(), email: $('#li-email').value.trim(),
+        company: $('#li-company').value.trim()})});
+    } else {
+      r = await fetch('/api/license/login', {method:'POST', body: JSON.stringify({
+        username: user, password: pass})});
+    }
+    const j = await r.json();
+    if (r.ok && j.ok){
+      $('#lic-modal').classList.add('hidden');
+      await refreshLic();
+    } else {
+      $('#li-err').textContent = j.error || '操作失败，请稍后重试';
+    }
+  } catch(e){
+    $('#li-err').textContent = '无法连接服务：' + e;
+  } finally {
+    $('#li-go').disabled = false;
+  }
+}
+
+// 次数用完 → 商务线索弹窗
+const LEAD_TIPS = {
+  monthly_exhausted: '本月 2 次免费额度已用完，每月 1 日自动重置。急用可提交联系方式立即获赠次数。',
+  yearly_exhausted: '本年度 12 次免费额度已用完。提交联系方式立即获赠次数，长期使用可洽谈商务合作。',
+  expired: '注册满一年的免费使用期已结束。提交联系方式，我们为您提供续期或商务方案。'
+};
+function openLeadDialog(code){
+  $('#lead-title').textContent = '免费转换次数已用完';
+  $('#lead-tip').textContent = LEAD_TIPS[code] || '转换额度不足。';
+  $('#ld-err').textContent = '';
+  $('#lead-bonus').textContent = '提交后立即获赠 5 次转换额度';
+  $('#ld-go').disabled = false;
+  $('#lead-modal').classList.remove('hidden');
+  setTimeout(() => $('#ld-contact').focus(), 50);
+}
+$('#ld-close').addEventListener('click', () => $('#lead-modal').classList.add('hidden'));
+$('#ld-go').addEventListener('click', async () => {
+  const contact = $('#ld-contact').value.trim();
+  if (contact.length < 3){ $('#ld-err').textContent = '请填写联系方式'; return; }
+  $('#ld-go').disabled = true;
+  $('#ld-err').textContent = '';
+  try {
+    const r = await fetch('/api/license/lead', {method:'POST', body: JSON.stringify({
+      contact, company: $('#ld-company').value.trim(),
+      requirement: $('#ld-req').value.trim()})});
+    const j = await r.json();
+    if (r.ok && j.ok){
+      $('#lead-bonus').textContent = j.granted > 0
+        ? '已到账 +' + j.granted + ' 次转换额度，感谢您的信任！'
+        : '已收到您的信息，我们会尽快与您联系！';
+      $('#ld-go').textContent = '完成';
+      await refreshLic();
+      setTimeout(() => {
+        $('#lead-modal').classList.add('hidden');
+        $('#ld-go').textContent = '提交并领取次数';
+      }, 1600);
+    } else {
+      $('#ld-err').textContent = j.error || '提交失败，请稍后重试';
+    }
+  } catch(e){
+    $('#ld-err').textContent = '无法连接服务：' + e;
+  } finally {
+    $('#ld-go').disabled = false;
   }
 });
 

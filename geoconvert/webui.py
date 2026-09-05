@@ -23,8 +23,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
 from .params import build_argv, detect_format, validate
+from . import license as lic
 
-APP_VERSION = '1.4.2'
+APP_VERSION = '1.5.0'
 RELEASES_API = 'https://api.github.com/repos/Darling5/geoconvert/releases/latest'
 RELEASES_URL = 'https://github.com/Darling5/geoconvert/releases/latest'
 
@@ -78,7 +79,7 @@ class State:
         self.done = True
         self.lines = []  # 日志行（含命令行首行）
 
-    def start(self, argv):
+    def start(self, argv, license_tx=None):
         with self.lock:
             if self.running:
                 return False, '已有转换在进行'
@@ -102,6 +103,7 @@ class State:
             self.done = False
             self.code = None
             self.t0 = time.time()
+            self.license_tx = license_tx
             self.lines = ['$ geoconvert ' + ' '.join(argv)]
             threading.Thread(target=self._pump, daemon=True).start()
             return True, None
@@ -137,6 +139,13 @@ class State:
                 self.lines.append('完成：用时 %.1fs，输出目录已就绪' % (time.time() - self.t0))
             else:
                 self.lines.append('失败：退出码 %s（详见上方日志）' % code)
+            license_tx = self.license_tx
+            self.license_tx = None
+        # 转换未成功（失败/取消）→ 退还本次转换次数，不冤枉用户
+        if license_tx and (code != 0 or self.cancelled):
+            threading.Thread(target=lic.refund, args=(license_tx,), daemon=True).start()
+            with self.lock:
+                self.lines.append('本次转换未完成，已退还转换次数')
 
     def status(self, since):
         with self.lock:
@@ -447,6 +456,8 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == '/api/check-update':
             force = (q.get('force') or [''])[0] in ('1', 'true')
             self._send(200, check_update(force))
+        elif u.path == '/api/license/status':
+            self._send(200, lic.status())
         else:
             self._send(404, {'error': 'not found'})
 
@@ -489,8 +500,15 @@ class Handler(BaseHTTPRequestHandler):
             if err:
                 self._send(400, {'error': err})
                 return
-            ok, err = STATE.start(build_argv(vals))
-            self._send(200 if ok else 409, {'ok': ok, 'error': err})
+            # 转换门禁：先扣 1 次配额（失败/取消会自动退还）
+            gate = lic.deduct(str(body.get('fmt') or ''),
+                              note=str(body.get('src') or '')[:120])
+            if not gate.get('ok'):
+                self._send(402, gate)
+                return
+            ok, err = STATE.start(build_argv(vals), license_tx=gate.get('tx_id'))
+            self._send(200 if ok else 409, {'ok': ok, 'error': err,
+                                            'quota': gate.get('quota')})
         elif u.path == '/api/cancel':
             self._send(200, {'ok': STATE.cancel()})
         elif u.path == '/api/open':
@@ -551,6 +569,24 @@ class Handler(BaseHTTPRequestHandler):
                 err = save_config({'tianditu_key': key})
                 self._send(200 if not err else 500,
                            {'ok': not err, 'error': err})
+        elif u.path == '/api/license/login':
+            r = lic.login(str(body.get('username') or '').strip(),
+                          str(body.get('password') or ''))
+            self._send(200 if r.get('ok') else 401, r)
+        elif u.path == '/api/license/register':
+            r = lic.register(str(body.get('username') or '').strip(),
+                             str(body.get('password') or ''),
+                             phone=str(body.get('phone') or '').strip(),
+                             email=str(body.get('email') or '').strip(),
+                             company=str(body.get('company') or '').strip())
+            self._send(200 if r.get('ok') else 400, r)
+        elif u.path == '/api/license/logout':
+            self._send(200, lic.logout())
+        elif u.path == '/api/license/lead':
+            r = lic.submit_lead(str(body.get('contact') or '').strip(),
+                                company=str(body.get('company') or '').strip(),
+                                requirement=str(body.get('requirement') or '').strip())
+            self._send(200 if r.get('ok') else 400, r)
         else:
             self._send(404, {'error': 'not found'})
 

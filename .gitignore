@@ -18,3 +18,5 @@ tools/_t/
 
 # 用户本地配置（含天地图个人 key，不随仓库分发）
 config.json
+# 用户本地登录凭据（含授权令牌，不随仓库分发）
+license.json
