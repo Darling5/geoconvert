@@ -25,7 +25,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 from .params import build_argv, detect_format, validate
 from . import license as lic
 
-APP_VERSION = '1.5.0'
+APP_VERSION = '1.5.1'
 RELEASES_API = 'https://api.github.com/repos/Darling5/geoconvert/releases/latest'
 RELEASES_URL = 'https://github.com/Darling5/geoconvert/releases/latest'
 
@@ -586,6 +586,18 @@ class Handler(BaseHTTPRequestHandler):
             r = lic.submit_lead(str(body.get('contact') or '').strip(),
                                 company=str(body.get('company') or '').strip(),
                                 requirement=str(body.get('requirement') or '').strip())
+            self._send(200 if r.get('ok') else 400, r)
+        elif u.path == '/api/license/profile-get':
+            r = lic.get_profile()
+            self._send(200 if r.get('ok') else 400, r)
+        elif u.path == '/api/license/profile-set':
+            r = lic.set_profile(phone=str(body.get('phone') or '').strip(),
+                                email=str(body.get('email') or '').strip(),
+                                company=str(body.get('company') or '').strip())
+            self._send(200 if r.get('ok') else 400, r)
+        elif u.path == '/api/license/password':
+            r = lic.change_password(str(body.get('old_password') or ''),
+                                    str(body.get('new_password') or ''))
             self._send(200 if r.get('ok') else 400, r)
         else:
             self._send(404, {'error': 'not found'})

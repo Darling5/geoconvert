@@ -237,3 +237,32 @@ def submit_lead(contact, company='', requirement=''):
     if s == 0:
         return {'ok': False, 'error': '无法连接授权服务器'}
     return {'ok': False, 'error': j.get('error') or '提交失败'}
+
+
+def get_profile():
+    s, j = _http('/api/profile')
+    if s == 200 and j.get('ok'):
+        return {'ok': True, 'profile': j.get('profile') or {}}
+    if s == 0:
+        return {'ok': False, 'error': '无法连接授权服务器，请检查网络'}
+    return {'ok': False, 'error': j.get('error') or '查询失败（%s）' % s}
+
+
+def set_profile(phone='', email='', company=''):
+    s, j = _http('/api/profile', 'POST',
+                 {'phone': phone, 'email': email, 'company': company})
+    if s == 200 and j.get('ok'):
+        return {'ok': True, 'profile': j.get('profile') or {}}
+    if s == 0:
+        return {'ok': False, 'error': '无法连接授权服务器，请检查网络'}
+    return {'ok': False, 'error': j.get('error') or '保存失败（%s）' % s}
+
+
+def change_password(old_password, new_password):
+    s, j = _http('/api/password', 'POST',
+                 {'old_password': old_password, 'new_password': new_password})
+    if s == 200 and j.get('ok'):
+        return {'ok': True}
+    if s == 0:
+        return {'ok': False, 'error': '无法连接授权服务器，请检查网络'}
+    return {'ok': False, 'error': j.get('error') or '修改失败（%s）' % s}
