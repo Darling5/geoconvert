@@ -179,6 +179,8 @@
           polygon: {
             hierarchy: new Cesium.CallbackProperty(() => new Cesium.PolygonHierarchy(positionsFn()), false),
             material: new Cesium.ColorMaterialProperty(color.withAlpha(baseAlpha)),
+            // 不加 perPositionHeight，polygon 会丢掉 Z 坐标贴地渲染（方块不跟轴的根因）
+            perPositionHeight: true,
             outline: !!outline,
             outlineColor: outline ? color : undefined,
           },
@@ -914,6 +916,7 @@
       if (outDir && !$('#pv-src').value) $('#pv-src').value = outDir;
     },
     openPreview, refreshPreview, saveBake, resetTransform,
+    viewer: () => viewer,
     state: () => ({ dir: curDir, t: { ...t }, hasTileset: !!tileset,
                     matrix: tileset ? Array.from(tileset.modelMatrix) : null,
                     baked: (tileset && !isZero(t)) ? bakedMatrix() : null }),
