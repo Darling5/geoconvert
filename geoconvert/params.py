@@ -72,7 +72,7 @@ def detect_format(path):
 
 
 def validate(fmt, src, dst, loc_mode='ll', lat='', lon='', ts='', center='', width='',
-             height='', max_tris='', tex_fmt='png'):
+             height='', max_tris='', tex_fmt='png', tiles='1.0'):
     """校验表单参数；返回 (vals, None) 或 (None, 错误消息)。"""
     fmt = str(fmt).upper()
     if fmt not in FORMATS:
@@ -86,6 +86,7 @@ def validate(fmt, src, dst, loc_mode='ll', lat='', lon='', ts='', center='', wid
     width = str(width).strip()
     height = str(height).strip()
     max_tris = str(max_tris).strip()
+    tiles = str(tiles).strip() or '1.0'
 
     if not src:
         return None, '请选择输入文件/目录'
@@ -145,7 +146,8 @@ def validate(fmt, src, dst, loc_mode='ll', lat='', lon='', ts='', center='', wid
     return dict(fmt=fmt, src=os.path.abspath(src), dst=os.path.abspath(dst),
                 loc_mode=loc_mode, lat=lat, lon=lon, ts=ts, center=center,
                 width=width, height=height, max_tris=max_tris,
-                tex_fmt=str(tex_fmt).lower() if str(tex_fmt).lower() in ('png', 'jpeg') else 'png'), None
+                tex_fmt=str(tex_fmt).lower() if str(tex_fmt).lower() in ('png', 'jpeg') else 'png',
+                tiles=tiles if tiles in ('1.0', '1.1') else '1.0'), None
 
 
 def build_argv(v):
@@ -170,4 +172,6 @@ def build_argv(v):
         argv += ['--max-tris', v['max_tris']]
     if v['height']:
         argv += ['--height', v['height']]
+    if v.get('tiles') == '1.1':
+        argv += ['--tiles-version', '1.1']
     return argv

@@ -350,13 +350,19 @@ class GlbBuilder:
                            'indices': len(self.accessors) - 1,
                            'material': self._tex_material(geom), 'mode': 4})
 
-    def finish(self):
+    def finish(self, yup=False):
+        """yup=True：包 -90° 绕 X 根节点，Z-up 几何 → 标准 glTF Y-up（3D Tiles 1.1 glb 内容）"""
         bin_data = b''.join(self.bin_parts)
+        nodes = [{'mesh': 0}]
+        if yup:
+            nodes = [{'rotation': [-0.7071067811865476, 0.0, 0.0,
+                                   0.7071067811865476], 'children': [1]},
+                     {'mesh': 0}]
         gltf = {
             'asset': {'generator': 'geoconvert-osgb', 'version': '2.0'},
             'scene': 0,
             'scenes': [{'nodes': [0]}],
-            'nodes': [{'mesh': 0}],
+            'nodes': nodes,
             'meshes': [{'primitives': self.prims}],
             'accessors': self.accessors,
             'bufferViews': self.buffer_views,
@@ -460,13 +466,14 @@ def _collect_geoms(nodes, matrix, out):
 
 class OsgbToTiles:
     def __init__(self, out_dir, flip_v=True, height=0.0, only=None, verbose=True,
-                 transform=None):
+                 transform=None, tiles11=False):
         self.out_dir = out_dir
         self.flip_v = flip_v
         self.height = height
         self.only = only
         self.verbose = verbose
         self.transform_override = transform
+        self.tiles11 = tiles11
         self.data_root = None
         self.transform = None
         self.visited = set()
@@ -513,8 +520,10 @@ class OsgbToTiles:
 
         box = _union_boxes(t['box'] for t in tiles)
         ge = max(2.0 * _box_radius(box), max(t['ge'] for t in tiles))
+        # 1.1：glb 内容为标准 Y-up，不带 1.0 前私有的 gltfUpAxis
+        asset = {'version': '1.1'} if self.tiles11 else {'version': '1.0', 'gltfUpAxis': 'Z'}
         tileset = {
-            'asset': {'version': '1.0', 'gltfUpAxis': 'Z'},
+            'asset': asset,
             'geometricError': ge,
             'root': {
                 'transform': self.transform,
@@ -528,8 +537,9 @@ class OsgbToTiles:
         with open(os.path.join(self.out_dir, 'tileset.json'), 'w', encoding='utf-8') as f:
             json.dump(tileset, f, separators=(',', ':'))
 
-        self.log('完成: %d 文件 / %d b3dm / %.1f MB, 失败 %d, 用时 %.0fs'
-                 % (self.n_files, self.n_b3dm, self.n_bytes / 1048576.0,
+        self.log('完成: %d 文件 / %d %s / %.1f MB, 失败 %d, 用时 %.0fs'
+                 % (self.n_files, self.n_b3dm, 'glb' if self.tiles11 else 'b3dm',
+                    self.n_bytes / 1048576.0,
                     len(self.failures), time.time() - t0))
         for fp, e in self.failures[:10]:
             self.log('  FAIL %s: %s' % (fp, e))
@@ -620,19 +630,20 @@ class OsgbToTiles:
             builder.add_geometry(g, m)
         if not builder.prims:
             return None, None
-        glb = builder.finish()
-        data = _b3dm(glb)
+        glb = builder.finish(yup=self.tiles11)
+        ext = 'glb' if self.tiles11 else 'b3dm'
+        data = glb if self.tiles11 else _b3dm(glb)
         rel_dir = _safe_name(rel_dir.replace('\\', '/'))
         stem = _safe_name(stem)
         out_dir = (os.path.join(self.out_dir, *rel_dir.split('/'))
                    if rel_dir != '.' else self.out_dir)
         os.makedirs(out_dir, exist_ok=True)
-        out_path = os.path.join(out_dir, stem + '.b3dm')
+        out_path = os.path.join(out_dir, stem + '.' + ext)
         with open(out_path, 'wb') as f:
             f.write(data)
         self.n_b3dm += 1
         self.n_bytes += len(data)
-        uri = ('%s/%s.b3dm' % (rel_dir, stem)) if rel_dir != '.' else ('%s.b3dm' % stem)
+        uri = ('%s/%s.%s' % (rel_dir, stem, ext)) if rel_dir != '.' else ('%s.%s' % (stem, ext))
         return uri, _box_from_minmax(builder.pos_min, builder.pos_max)
 
     @staticmethod
@@ -660,12 +671,15 @@ def main(argv=None):
     ap.add_argument('--transform-from', default=None, metavar='TILESET',
                     help='从参考 tileset.json 复制 root.transform（与既有模型精确重合）')
     ap.add_argument('--only', default=None, help='只转换名称含此子串的根瓦片（调试）')
+    ap.add_argument('--tiles-version', choices=['1.0', '1.1'], default='1.0',
+                    help='3D Tiles 版本：1.0=b3dm（默认），1.1=glb 内容（需 Cesium 1.83+）')
     args = ap.parse_args(argv)
     transform = None
     if args.transform_from:
         transform = transform_from_tileset(args.transform_from)
     conv = OsgbToTiles(args.out, flip_v=not args.no_flip_v, height=args.height,
-                       only=args.only, transform=transform)
+                       only=args.only, transform=transform,
+                       tiles11=args.tiles_version == '1.1')
     conv.convert(args.input)
 
 

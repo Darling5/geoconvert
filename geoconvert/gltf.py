@@ -15,6 +15,9 @@ except ImportError:  # 纯列表路径不依赖 numpy
 
 _EXT_CACHE = {}
 
+# -90° 绕 X 轴四元数 [x,y,z,w]：Z-up → glTF 标准 Y-up
+YUP_ROTATION = [-0.7071067811865476, 0.0, 0.0, 0.7071067811865476]
+
 
 def image_mime(data):
     if data[:3] == b'\xff\xd8\xff':
@@ -223,13 +226,20 @@ class GlbBuilder:
                            'indices': len(self.accessors) - 1,
                            'material': self._material_for(texture), 'mode': 4})
 
-    def finish(self):
+    def finish(self, yup=False):
+        """yup=True：包一层 -90° 绕 X 旋转的根节点，把 Z-up 几何转成标准 glTF Y-up
+        （3D Tiles 1.1 的 glb 内容按标准 glTF Y-up 渲染，客户端自动转回 Z-up；
+        1.0 b3dm 内嵌 glTF 本身就是 Z-up，不能加，加了会被转两次）"""
         bin_data = b''.join(self.bin_parts)
+        nodes = [{'mesh': 0}]
+        scene_nodes = [0]
+        if yup:
+            nodes = [{'rotation': YUP_ROTATION, 'children': [1]}, {'mesh': 0}]
         gltf = {
             'asset': {'generator': 'geoconvert', 'version': '2.0'},
             'scene': 0,
-            'scenes': [{'nodes': [0]}],
-            'nodes': [{'mesh': 0}],
+            'scenes': [{'nodes': scene_nodes}],
+            'nodes': nodes,
             'meshes': [{'primitives': self.prims}],
             'accessors': self.accessors,
             'bufferViews': self.buffer_views,

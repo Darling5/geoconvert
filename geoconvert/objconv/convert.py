@@ -273,7 +273,7 @@ def _resized_jpeg(path, max_dim, quality):
 
 class ObjToTiles:
     def __init__(self, out_dir, lat=None, lon=None, height=0.0, transform=None,
-                 lods=None, max_tris=250000, verbose=True):
+                 lods=None, max_tris=250000, verbose=True, tiles11=False):
         self.out_dir = os.path.abspath(out_dir)
         self.lat = lat
         self.lon = lon
@@ -282,6 +282,7 @@ class ObjToTiles:
         self.lods = lods if lods is not None else DEFAULT_LODS
         self.max_tris = max_tris
         self.verbose = verbose
+        self.tiles11 = tiles11
         self.transform = None
         self.blocks = []
         self._tex_cache = {}
@@ -490,6 +491,7 @@ class ObjToTiles:
         mx = np.max([s['pos'].max(axis=0) for s in subs], axis=0)
         box = box_from_minmax(mn.tolist(), mx.tolist())
         radius = box_radius(box)
+        ext = 'glb' if self.tiles11 else 'b3dm'
 
         block_dir = os.path.join(self.out_dir, name)
         os.makedirs(block_dir, exist_ok=True)
@@ -498,11 +500,12 @@ class ObjToTiles:
         for s in subs:
             b.add_primitive(s['pos'], s['uv'], s['tri'],
                             texture=self._tex_for(s, None))
-        data = to_b3dm(b.finish())
-        with open(os.path.join(block_dir, 'full.b3dm'), 'wb') as f:
+        glb = b.finish(yup=self.tiles11)
+        data = glb if self.tiles11 else to_b3dm(glb)
+        with open(os.path.join(block_dir, 'full.' + ext), 'wb') as f:
             f.write(data)
-        self._log('  %s full.b3dm: %.1f MB %.1fs' %
-                  (name, len(data) / 1048576, time.time() - t0))
+        self._log('  %s full.%s: %.1f MB %.1fs' %
+                  (name, ext, len(data) / 1048576, time.time() - t0))
 
         for lod in self.lods:
             t1 = time.time()
@@ -512,39 +515,45 @@ class ObjToTiles:
                                              lod['ratio'])
                 b.add_primitive(p2, uv2, t2,
                                 texture=self._tex_for(s, lod))
-            data = to_b3dm(b.finish())
-            with open(os.path.join(block_dir, lod['name'] + '.b3dm'), 'wb') as f:
+            glb = b.finish(yup=self.tiles11)
+            data = glb if self.tiles11 else to_b3dm(glb)
+            with open(os.path.join(block_dir, lod['name'] + '.' + ext), 'wb') as f:
                 f.write(data)
-            self._log('  %s %s.b3dm: %.1f MB (%.0f%% tris) %.1fs' %
-                      (name, lod['name'], len(data) / 1048576, lod['ratio'] * 100,
-                       time.time() - t1))
+            self._log('  %s %s.%s: %.1f MB (%.0f%% tris) %.1fs' %
+                      (name, lod['name'], ext, len(data) / 1048576,
+                       lod['ratio'] * 100, time.time() - t1))
 
         ts = self._block_tileset(box, radius)
         with open(os.path.join(block_dir, 'tileset.json'), 'w', encoding='utf-8') as f:
             json.dump(ts, f, separators=(',', ':'))
         self.blocks.append((name, box, radius))
 
+    def _asset(self):
+        # 1.1：内容为标准 Y-up glb（无 gltfUpAxis——那是 1.0 前的私有属性，留着重叠旋转）
+        return {'version': '1.1'} if self.tiles11 else {'gltfUpAxis': 'Z', 'version': '1.0'}
+
     def _block_tileset(self, box, radius):
         # Cesium SSE=16 下细化距离≈GE×58m；root GE≈radius×0.045、lod1 GE≈radius×0.005
         ge_root = max(40, round(radius * 0.045))
         ge_lod1 = max(4, round(radius * 0.005))
+        ext = 'glb' if self.tiles11 else 'b3dm'
         return {
-            'asset': {'gltfUpAxis': 'Z', 'version': '1.0'},
+            'asset': self._asset(),
             'geometricError': max(100, int(radius * 2) + 1),
             'root': {
                 'transform': self.transform,
                 'boundingVolume': {'box': box},
                 'refine': 'REPLACE',
                 'geometricError': ge_root,
-                'content': {'uri': 'lod0.b3dm'},
+                'content': {'uri': 'lod0.' + ext},
                 'children': [{
                     'boundingVolume': {'box': box},
                     'geometricError': ge_lod1,
-                    'content': {'uri': 'lod1.b3dm'},
+                    'content': {'uri': 'lod1.' + ext},
                     'children': [{
                         'boundingVolume': {'box': box},
                         'geometricError': 0,
-                        'content': {'uri': 'full.b3dm'},
+                        'content': {'uri': 'full.' + ext},
                     }],
                 }],
             },
@@ -579,7 +588,7 @@ class ObjToTiles:
         union = box_from_minmax(all_min, all_max)
         radius = box_radius(union)
         tileset = {
-            'asset': {'gltfUpAxis': 'Z', 'version': '1.0'},
+            'asset': self._asset(),
             'geometricError': max(100, int(radius * 2) + 1),
             'root': {
                 'transform': self.transform,
@@ -611,6 +620,9 @@ def main(argv=None):
                     help='参考 tileset.json，复制其 root.transform（优先于 --lat/--lon）')
     ap.add_argument('--max-tris', type=int, default=250000,
                     help='单块三角形数上限，超过则空间切块（0=禁用切块，默认 25 万）')
+    ap.add_argument('--tiles-version', choices=['1.0', '1.1'], default='1.0',
+                    help='3D Tiles 版本：1.0=b3dm（兼容性最广，默认），'
+                         '1.1=glb 内容（标准更现代，需 Cesium 1.83+）')
     ap.add_argument('-q', '--quiet', action='store_true')
     args = ap.parse_args(argv)
 
@@ -619,7 +631,7 @@ def main(argv=None):
         override = transform_from_tileset(args.transform_from)
     c = ObjToTiles(args.output, lat=args.lat, lon=args.lon, height=args.height,
                    transform=override, max_tris=args.max_tris,
-                   verbose=not args.quiet)
+                   verbose=not args.quiet, tiles11=args.tiles_version == '1.1')
     c.convert(args.input)
     return 0
 

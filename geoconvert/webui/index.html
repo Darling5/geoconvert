@@ -162,6 +162,10 @@ footer#bar b{color:var(--txt)}
 
   <section class="card">
     <h2>高级</h2>
+    <div class="row"><label>Tiles 版本</label><select id="tilesver">
+      <option value="1.0">3D Tiles 1.0（b3dm，兼容性最广，推荐）</option>
+      <option value="1.1">3D Tiles 1.1（glb 内容，标准更现代，需 Cesium 1.83+）</option>
+    </select></div>
     <div class="row" id="adv-obj"><label>切块阈值</label><input class="num" id="maxtris" value="250000"><label style="min-width:auto">单块最大三角形数（超出自动空间切块）</label></div>
     <div class="row hidden" id="adv-tif"><label>纹理格式</label><select id="tex"><option value="png">png（无损）</option><option value="jpeg">jpeg（更小）</option></select></div>
   </section>
@@ -631,7 +635,8 @@ $('#start').addEventListener('click', async () => {
     locMode, lat: $('#lat').value.trim(), lon: $('#lon').value.trim(),
     ts: $('#ts').value.trim(), center: $('#center').value.trim(),
     width: $('#width').value.trim(), height: $('#height').value.trim(),
-    maxTris: $('#maxtris').value.trim(), texFmt: $('#tex').value
+    maxTris: $('#maxtris').value.trim(), texFmt: $('#tex').value,
+    tiles: $('#tilesver').value
   };
   let r;
   try { r = await fetch('/api/start', {method:'POST', body: JSON.stringify(body)}); }

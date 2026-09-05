@@ -65,7 +65,7 @@ def encode_image(im, fmt):
     return buf.getvalue()
 
 
-def build_plane_b3dm(w_m, h_m, tex_bytes):
+def build_plane_b3dm(w_m, h_m, tex_bytes, tiles11=False):
     """单四边形贴图平面（ENU 原始坐标，中心在原点，z=0，法线朝上）。"""
     hw, hh = w_m / 2.0, h_m / 2.0
     # v0 西北(图像左上) v1 东北(右上) v2 东南(右下) v3 西南(左下)
@@ -75,10 +75,11 @@ def build_plane_b3dm(w_m, h_m, tex_bytes):
         [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
         [0, 2, 1, 0, 3, 2],
         texture=tex_bytes)
-    return to_b3dm(b.finish())
+    glb = b.finish(yup=tiles11)
+    return glb if tiles11 else to_b3dm(glb)
 
 
-def build_cell_b3dm(x0, x1, y0, y1, tex_bytes):
+def build_cell_b3dm(x0, x1, y0, y1, tex_bytes, tiles11=False):
     """网格块平面：ENU 坐标 (x0..x1)×(y0..y1)，z=0，UV 全幅映射裁出的纹理。"""
     # v0 西北(左上) v1 东北(右上) v2 东南(右下) v3 西南(左下)
     b = GlbBuilder(unlit=True, alpha=True)
@@ -87,7 +88,8 @@ def build_cell_b3dm(x0, x1, y0, y1, tex_bytes):
         [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
         [0, 2, 1, 0, 3, 2],
         texture=tex_bytes)
-    return to_b3dm(b.finish())
+    glb = b.finish(yup=tiles11)
+    return glb if tiles11 else to_b3dm(glb)
 
 
 def fetch_backend_params(backend, timeout=8):
@@ -100,7 +102,7 @@ def fetch_backend_params(backend, timeout=8):
 def convert_tif_plane(tif_path, out_dir, center_lon, center_lat, rotation=0.0,
                       width_meters=3000.0, height=0.0, tex_max=4096,
                       threshold=BLACK_THRESHOLD, fmt='png', cell_max=2048,
-                      verbose=True):
+                      verbose=True, tiles11=False):
     t0 = time.time()
     if height <= 0:
         height = 1.0  # 与地面（椭球高 0）完全共面会深度冲突
@@ -109,6 +111,9 @@ def convert_tif_plane(tif_path, out_dir, center_lon, center_lat, rotation=0.0,
     h_m = width_meters * img_h / img_w
     hw, hh = width_meters / 2.0, h_m / 2.0
     os.makedirs(out_dir, exist_ok=True)
+    # 1.1：glb 内容为标准 Y-up，不带 1.0 前私有的 gltfUpAxis
+    asset = {'version': '1.1'} if tiles11 else {'gltfUpAxis': 'Z', 'version': '1.0'}
+    ext = 'glb' if tiles11 else 'b3dm'
 
     transform = enu_to_ecef_transform(center_lat, center_lon, height, rotation)
     radius = math.hypot(hw, hh)
@@ -122,17 +127,17 @@ def convert_tif_plane(tif_path, out_dir, center_lon, center_lat, rotation=0.0,
 
     if nx == 1 and ny == 1:
         tex = encode_image(im, fmt)
-        data = build_plane_b3dm(width_meters, h_m, tex)
-        with open(os.path.join(out_dir, 'plane.b3dm'), 'wb') as f:
+        data = build_plane_b3dm(width_meters, h_m, tex, tiles11)
+        with open(os.path.join(out_dir, 'plane.' + ext), 'wb') as f:
             f.write(data)
         tileset = {
-            'asset': {'gltfUpAxis': 'Z', 'version': '1.0'},
+            'asset': asset,
             'geometricError': max(100, math.ceil(radius * 2)),
             'root': {
                 'transform': transform,
                 'boundingVolume': {'box': whole_box},
                 'geometricError': 0,
-                'content': {'uri': 'plane.b3dm'},
+                'content': {'uri': 'plane.' + ext},
             },
         }
         n_files, total_bytes = 1, len(data)
@@ -144,8 +149,8 @@ def convert_tif_plane(tif_path, out_dir, center_lon, center_lat, rotation=0.0,
         ov_w = min(1024, img_w)
         ov_h = max(1, round(img_h * ov_w / img_w))
         ov = im.resize((ov_w, ov_h), Image.LANCZOS)
-        data = build_plane_b3dm(width_meters, h_m, encode_image(ov, fmt))
-        with open(os.path.join(out_dir, 'overview.b3dm'), 'wb') as f:
+        data = build_plane_b3dm(width_meters, h_m, encode_image(ov, fmt), tiles11)
+        with open(os.path.join(out_dir, 'overview.' + ext), 'wb') as f:
             f.write(data)
         n_files, total_bytes = 1, len(data)
 
@@ -160,8 +165,9 @@ def convert_tif_plane(tif_path, out_dir, center_lon, center_lat, rotation=0.0,
                 x1 = -hw + (i + 1) * cw
                 cell = im.crop((round(i * px_w), round(j * px_h),
                                 round((i + 1) * px_w), round((j + 1) * px_h)))
-                data = build_cell_b3dm(x0, x1, y0, y1, encode_image(cell, fmt))
-                uri = 'cell_r%02dc%02d.b3dm' % (j, i)
+                data = build_cell_b3dm(x0, x1, y0, y1, encode_image(cell, fmt),
+                                       tiles11)
+                uri = 'cell_r%02dc%02d.%s' % (j, i, ext)
                 with open(os.path.join(out_dir, uri), 'wb') as f:
                     f.write(data)
                 n_files += 1
@@ -176,14 +182,14 @@ def convert_tif_plane(tif_path, out_dir, center_lon, center_lat, rotation=0.0,
         # SSE=16 下细化距离≈GE×58m；总览在 ~radius 米外即可被格网替换
         ge_root = max(32, round(radius * 0.02))
         tileset = {
-            'asset': {'gltfUpAxis': 'Z', 'version': '1.0'},
+            'asset': asset,
             'geometricError': max(100, math.ceil(radius * 2)),
             'root': {
                 'transform': transform,
                 'boundingVolume': {'box': whole_box},
                 'refine': 'REPLACE',
                 'geometricError': ge_root,
-                'content': {'uri': 'overview.b3dm'},
+                'content': {'uri': 'overview.' + ext},
                 'children': children,
             },
         }
@@ -223,6 +229,8 @@ def main(argv=None):
                     help='png=黑边透明（默认），jpeg=更小但黑角保留')
     ap.add_argument('--backend', help='后端地址：从 /files/dom-imagery.json 读参数'
                     '（center/rotation/width/height 未显式给出时生效）')
+    ap.add_argument('--tiles-version', choices=['1.0', '1.1'], default='1.0',
+                    help='3D Tiles 版本：1.0=b3dm（默认），1.1=glb 内容（需 Cesium 1.83+）')
     ap.add_argument('-q', '--quiet', action='store_true')
     args = ap.parse_args(argv)
 
@@ -258,7 +266,7 @@ def main(argv=None):
     convert_tif_plane(args.tif, args.output, lon, lat, rot, width, height,
                       args.tex_max, args.threshold, args.format,
                       cell_max=args.cell_max or 10 ** 9,
-                      verbose=not args.quiet)
+                      verbose=not args.quiet, tiles11=args.tiles_version == '1.1')
     return 0
 
 

@@ -437,7 +437,8 @@ class Handler(BaseHTTPRequestHandler):
                 lat=body.get('lat') or '', lon=body.get('lon') or '',
                 ts=body.get('ts') or '', center=body.get('center') or '',
                 width=body.get('width') or '', height=body.get('height') or '',
-                max_tris=body.get('maxTris') or '', tex_fmt=body.get('texFmt') or 'png')
+                max_tris=body.get('maxTris') or '', tex_fmt=body.get('texFmt') or 'png',
+                tiles=body.get('tiles') or '1.0')
             if err:
                 self._send(400, {'error': err})
                 return
