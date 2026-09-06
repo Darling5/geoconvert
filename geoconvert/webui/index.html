@@ -907,7 +907,8 @@ $('#start').addEventListener('click', async () => {
   if (r.status === 402 || r.status === 403){
     // 门禁：未登录 / 次数不足 / 审核中 / 授权服务器不可达
     if (j.code === 'login_required') openLicModal('login');
-    else if (j.code === 'offline' || j.code === 'server_error')
+    else if (j.code === 'offline' || j.code === 'server_error' ||
+             j.code === 'offline_no_snapshot' || j.code === 'offline_limit')
       alert(j.error || '无法连接授权服务器，请检查网络后重试');
     else if (j.code === 'pending_review' || j.code === 'rejected'
              || j.code === 'device_blocked' || j.code === 'device_limit')
@@ -1145,11 +1146,14 @@ function renderLic(){
   const yl = q.yearly_left != null ? q.yearly_left : '-';
   let cls = '';
   if (LIC.quota && (LIC.quota.code !== 'ok')) cls = (ml <= 0 || yl <= 0 || q.expired) ? ' bad' : ' warn';
-  const offline = LIC.online ? '' : '<span style="color:#ffd04d;font-size:12px" title="无法连接授权服务器">⚠ 离线</span> ';
+  const offline = LIC.online ? '' : '<span style="color:#ffd04d;font-size:12px" title="无法连接授权服务器（离线模式：可继续转换，联网后自动同步）">⚠ 离线</span> ';
+  const pend = (LIC.offline_pending > 0)
+    ? '<span style="color:#ffd04d;font-size:12px" title="离线转换记录待同步：恢复网络后自动补扣到服务器">⇅ 待同步 ' + LIC.offline_pending + ' 次</span> '
+    : '';
   const pending = LIC.status === 'pending'
     ? '<span class="lic-quota warn" title="注册后最长 24 小时自动通过审核，通过后即可转换" style="cursor:help">⏳ 审核中</span>'
     : '';
-  box.innerHTML = offline +
+  box.innerHTML = offline + pend +
     '<span class="lic-user"><b title="' + esc(LIC.username) + '">' + esc(LIC.username) + '</b>' +
     pending +
     '<span class="lic-quota' + cls + '" id="lic-quota" title="点击刷新 · 月度 / 年度剩余转换次数" style="cursor:pointer">本月 <em>' + ml + '</em> · 年度 <em>' + yl + '</em></span>' +
@@ -1211,8 +1215,11 @@ function renderUserPage(){
     const d = new Date(ts * 1000);
     return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
   };
-  const offline = LIC.online ? '' : '<p class="uc-warn">⚠ 无法连接授权服务器，以下为最近一次查询结果</p>';
-  card.innerHTML = '<h2>转换额度</h2>' + offline +
+  const offline = LIC.online ? '' : '<p class="uc-warn">⚠ 无法连接授权服务器 — 已进入离线模式：可继续转换（本地记账），恢复网络后自动同步</p>';
+  const pend = (LIC.offline_pending > 0)
+    ? '<p class="uc-warn">⇅ 有 ' + LIC.offline_pending + ' 笔离线转换待同步，恢复网络后自动补扣</p>'
+    : '';
+  card.innerHTML = '<h2>转换额度</h2>' + offline + pend +
     '<div class="uc-grid q3">' +
     '<div class="uc-item"><small>账号</small><b>' + esc(LIC.username) + '</b></div>' +
     '<div class="uc-item"><small>本月剩余 / 上限</small><b>' + (q.monthly_left ?? '-') + ' / ' + (q.monthly_limit ?? '-') + '</b></div>' +

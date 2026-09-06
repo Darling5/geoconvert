@@ -25,7 +25,7 @@ from urllib.parse import urlparse, parse_qs, unquote, quote
 from .params import build_argv, detect_format, validate
 from . import license as lic
 
-APP_VERSION = '1.5.7'
+APP_VERSION = '1.5.8'
 GITEE_API = 'https://gitee.com/api/v5/repos/darling5/geoconvert/releases/latest'
 GITEE_URL = 'https://gitee.com/darling5/geoconvert/releases/latest'
 RELEASES_API = 'https://api.github.com/repos/Darling5/geoconvert/releases/latest'
@@ -242,17 +242,35 @@ def load_config():
             cfg = json.load(f)
         if isinstance(cfg, dict):
             return {'tianditu_key': str(cfg.get('tianditu_key') or ''),
+                    'reg_json': str(cfg.get('reg_json') or ''),
+                    'reg_root': str(cfg.get('reg_root') or ''),
                     'version': APP_VERSION}
     except (OSError, ValueError):
         pass
-    return {'tianditu_key': '', 'version': APP_VERSION}
+    return {'tianditu_key': '', 'reg_json': '', 'reg_root': '',
+            'version': APP_VERSION}
 
 
 def save_config(cfg):
+    """合并写入（保留未提及的字段，如 reg_json/reg_root）。"""
+    old = {}
+    try:
+        with open(_config_path(), encoding='utf-8-sig') as f:
+            old = json.load(f)
+        if not isinstance(old, dict):
+            old = {}
+    except (OSError, ValueError):
+        pass
+    merged = dict(old)
+    if 'tianditu_key' in cfg:
+        merged['tianditu_key'] = str(cfg.get('tianditu_key') or '').strip()
+    if 'reg_json' in cfg:
+        merged['reg_json'] = str(cfg.get('reg_json') or '').strip()
+    if 'reg_root' in cfg:
+        merged['reg_root'] = str(cfg.get('reg_root') or '').strip()
     try:
         with open(_config_path(), 'w', encoding='utf-8') as f:
-            json.dump({'tianditu_key': str(cfg.get('tianditu_key') or '').strip()}, f,
-                      ensure_ascii=False, indent=2)
+            json.dump(merged, f, ensure_ascii=False, indent=2)
         return None
     except OSError as e:
         return str(e)
@@ -303,11 +321,43 @@ def browse(path):
             'selected': selected}
 
 
+_SKIP_DIRS = {'windows', 'program files', 'program files (x86)', 'programdata',
+              'appdata', '$recycle.bin', 'system volume information',
+              'msocache', 'recovery', 'perflogs', 'intel', 'drivers',
+              'node_modules', '.git', '.cache', '__pycache__', 'venv', '.venv'}
+
+
+def _drive_bases(maxdepth=2):
+    """盘符下 maxdepth 层内的候选目录（系统/依赖目录跳过）。"""
+    out = []
+    for root in list_drives():
+        cur = [root]
+        for depth in range(maxdepth + 1):
+            nxt = []
+            last = depth == maxdepth
+            for d in cur:
+                if d not in out:
+                    out.append(d)
+                if last:
+                    continue
+                try:
+                    for n in os.listdir(d):
+                        if n.lower() in _SKIP_DIRS:
+                            continue
+                        nxt.append(os.path.join(d, n))
+                except OSError:
+                    continue
+            cur = [d for d in nxt if os.path.isdir(d)]
+    return out
+
+
 def find_models_json():
     """自动探测系统 models.json 及其模型根目录。
 
     返回 [{json, root}]：root 用既有条目的 url（'/xxx/tileset.json'）反查——
     候选 = json 所在目录 / 其上一级，谁下面存在同名模型目录谁就是根。
+    探测范围：exe/项目目录与 cwd 各往上爬 5 层 + 盘符下两层内的目录
+    （安装版 exe 在 C:\AppData 下，靠盘符扫描才能覆盖 D:\WEB\zicaiduck\www\public）。
     """
     paths = []
     bases = []
@@ -321,6 +371,7 @@ def find_models_json():
             if parent == d:
                 break
             d = parent
+    bases += _drive_bases()
     for b in bases:
         for p in sorted(glob.glob(os.path.join(b, 'www', 'public', '*', 'models.json'))):
             if p not in paths and os.path.isfile(p):
@@ -512,7 +563,18 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {'models': [{'json': p, 'root': _detect_model_root(p)}]})
             else:
-                self._send(200, {'models': find_models_json()})
+                models = find_models_json()
+                # 记忆的上次选择优先（文件还在才生效）
+                cfg = load_config()
+                mem = cfg.get('reg_json') or ''
+                if mem and os.path.isfile(mem):
+                    hit = [m for m in models if os.path.normcase(m['json']) == os.path.normcase(mem)]
+                    if hit:
+                        models = hit + [m for m in models if m not in hit]
+                    else:
+                        models = [{'json': mem, 'root': cfg.get('reg_root') or
+                                   _detect_model_root(mem)}] + models
+                self._send(200, {'models': models})
         elif u.path == '/api/config':
             self._send(200, load_config())
         elif u.path == '/api/check-update':
@@ -626,6 +688,9 @@ class Handler(BaseHTTPRequestHandler):
             if err:
                 self._send(400, {'error': err})
             else:
+                # 记住本次选择，下次自动探测直接命中
+                save_config({'reg_json': str(body.get('modelsJson') or ''),
+                             'reg_root': str(body.get('root') or '')})
                 self._send(200, vals)
         elif u.path == '/api/config':
             key = str(body.get('tianditu_key') or '').strip()

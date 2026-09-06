@@ -6,17 +6,26 @@
 服务器地址可通过 license.json 的 server_url 字段覆盖（本地联调用 http://127.0.0.1:8900）。
 """
 import hashlib
+import hmac
 import json
 import os
 import secrets
 import ssl
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 
 LICENSE_SERVER = 'https://103.78.229.17:8443'
 TIMEOUT = 12
+
+# 离线兜底：断网时按最近一次在线配额快照本地扣次（上限 OFFLINE_MAX 笔），
+# 恢复网络后逐笔补扣同步到服务器。账本 HMAC 签名（密钥=设备+token）防低门槛篡改。
+OFFLINE_MAX = 3
+OFFLINE_SNAP_TTL = 7 * 86400
+_ledger_lock = threading.Lock()
+_syncing = False
 
 # 服务端自签证书（公钥部分固定在客户端，防中间人；私钥只在服务器上）
 SERVER_CERT = '''-----BEGIN CERTIFICATE-----
@@ -124,13 +133,156 @@ def _http(path, method='GET', body=None, auth=True):
         return 0, {}
 
 
+# ---------------------------------------------------------------- 离线兜底
+
+def _save_snap(d, quota, status='ok'):
+    """在线拿到的配额实时存快照（离线扣次与界面显示的依据）。"""
+    if isinstance(quota, dict) and quota.get('code') == 'ok':
+        d['quota_snap'] = {'quota': quota, 'status': status or 'ok', 'ts': time.time()}
+        _save(d)
+
+
+def _ledger_key(d):
+    return hashlib.sha256(('%s|%s' % (d.get('device_id') or '',
+                                      d.get('token') or '')).encode()).hexdigest()
+
+
+def _ledger_sig(items, key):
+    body = json.dumps(items, ensure_ascii=False, sort_keys=True).encode('utf-8')
+    return hmac.new(key.encode('utf-8'), body, hashlib.sha256).hexdigest()
+
+
+def _load_ledger(d):
+    """读离线账本（校验签名，被篡改视为作废清零）。"""
+    led = d.get('ledger')
+    if not isinstance(led, dict):
+        return []
+    raw = led.get('items')
+    if not isinstance(raw, list):
+        return []
+    items = [x for x in raw if isinstance(x, dict) and x.get('nonce') and x.get('ts')]
+    if str(led.get('sig') or '') != _ledger_sig(items, _ledger_key(d)):
+        return []
+    return items
+
+
+def _write_ledger(d, items):
+    d['ledger'] = {'items': items, 'sig': _ledger_sig(items, _ledger_key(d))}
+    _save(d)
+
+
+def _snap_valid(d):
+    snap = d.get('quota_snap')
+    if not isinstance(snap, dict):
+        return None
+    if time.time() - (snap.get('ts') or 0) > OFFLINE_SNAP_TTL:
+        return None
+    q = snap.get('quota')
+    if not isinstance(q, dict) or q.get('code') != 'ok':
+        return None
+    return snap
+
+
+def _local_quota(q, pending):
+    """快照配额减去未同步笔数 → 本地视图。"""
+    lq = dict(q)
+    ml, yl = q.get('monthly_left'), q.get('yearly_left')
+    if isinstance(ml, int):
+        lq['monthly_left'] = ml - pending
+        lq['monthly_used'] = (q.get('monthly_used') or 0) + pending
+    if isinstance(yl, int):
+        lq['yearly_left'] = yl - pending
+        lq['yearly_used'] = (q.get('yearly_used') or 0) + pending
+    return lq
+
+
+def _offline_deduct(d, fmt, note):
+    snap = _snap_valid(d)
+    if not snap:
+        return {'ok': False, 'code': 'offline_no_snapshot',
+                'error': '无法连接授权服务器，且离线额度未激活（需联网成功使用一次后可离线转换）'}
+    if snap.get('status') and snap['status'] != 'ok':
+        code = snap['status']
+        return {'ok': False, 'code': code, 'error': _CODE_MSG.get(code, '账号状态异常')}
+    q = snap['quota']
+    if q.get('expired') or (q.get('valid_until') and q['valid_until'] < time.time()):
+        return {'ok': False, 'code': 'expired', 'error': _CODE_MSG['expired']}
+    with _ledger_lock:
+        items = _load_ledger(d)
+        pending = len(items)
+        if pending >= OFFLINE_MAX:
+            return {'ok': False, 'code': 'offline_limit',
+                    'error': '离线转换次数已用完（最多 %d 次），恢复网络后自动同步即可继续' % OFFLINE_MAX}
+        ml, yl = q.get('monthly_left'), q.get('yearly_left')
+        if isinstance(ml, int) and ml - pending <= 0:
+            return {'ok': False, 'code': 'monthly_exhausted',
+                    'error': _CODE_MSG['monthly_exhausted'], 'quota': _local_quota(q, pending)}
+        if isinstance(yl, int) and yl - pending <= 0:
+            return {'ok': False, 'code': 'yearly_exhausted',
+                    'error': _CODE_MSG['yearly_exhausted'], 'quota': _local_quota(q, pending)}
+        nonce = secrets.token_hex(8)
+        items.append({'ts': time.time(), 'fmt': str(fmt or ''), 'nonce': nonce,
+                      'note': str(note or '')[:120]})
+        _write_ledger(d, items)
+    return {'ok': True, 'offline': True, 'tx_id': 'offline:' + nonce,
+            'quota': _local_quota(q, pending + 1)}
+
+
+def _maybe_sync():
+    """在线且有未同步账目时，后台线程逐笔补扣（与服务器 /api/deduct 兼容，服务端零改动）。"""
+    global _syncing
+    if _syncing:
+        return
+    with _ledger_lock:
+        d0 = _load()
+        if not _load_ledger(d0):
+            return
+        _syncing = True
+    threading.Thread(target=_sync_worker, daemon=True).start()
+
+
+def _sync_worker():
+    global _syncing
+    try:
+        while True:
+            with _ledger_lock:
+                d = _load()
+                items = _load_ledger(d)
+                if not items:
+                    return
+                it = items[0]
+            s, j = _http('/api/deduct', 'POST',
+                         {'fmt': it.get('fmt') or '',
+                          'note': '[离线补扣] ' + str(it.get('note') or '')})
+            with _ledger_lock:
+                d = _load()
+                items = _load_ledger(d)
+                if not items or items[0].get('nonce') != it.get('nonce'):
+                    return  # 并发变化（如离线退还）——退出重来
+                if s == 200 or s == 402:
+                    # 200=补扣成功；402=服务器额度不足（离线期间被其他设备消耗）→ 该笔记损继续
+                    _write_ledger(d, items[1:])
+                    if s == 200:
+                        _save_snap(d, j.get('quota'))
+                    continue
+                return  # 网络又断 / 401 / 5xx：下次在线再试
+    finally:
+        _syncing = False
+
+
 # ---------------------------------------------------------------- 对外接口
 
 
 def _offline(extra=None):
-    out = {'logged_in': bool(_load().get('token')), 'online': False,
-           'username': _load().get('username') or '',
-           'error': '无法连接授权服务器，请检查网络后重试'}
+    d = _load()
+    out = {'logged_in': bool(d.get('token')), 'online': False,
+           'username': d.get('username') or '',
+           'error': '无法连接授权服务器（离线模式：可继续转换，次数联网后自动同步）'}
+    snap = _snap_valid(d)
+    pending = len(_load_ledger(d))
+    out['offline_pending'] = pending
+    if snap:
+        out['quota'] = _local_quota(snap['quota'], pending)
     if extra:
         out.update(extra)
     return out
@@ -143,8 +295,8 @@ def status():
         return {'logged_in': False, 'online': True, 'username': '',
                 'quota': None}
     if d.get('expires') and d['expires'] < time.time():
-        return {'logged_in': False, 'online': True, 'username': '',
-                'quota': None, 'error': '登录已过期，请重新登录'}
+        return {'logged_in': False, 'online': True, 'username': '', 'quota': None,
+                'error': '登录已过期，请重新登录'}
     s, j = _http('/api/quota')
     if s == 0:
         return _offline()
@@ -152,8 +304,11 @@ def status():
         return {'logged_in': False, 'online': True, 'username': '', 'quota': None}
     if s != 200:
         return _offline({'error': j.get('error') or '服务器异常'})
+    _save_snap(d, j.get('quota'), j.get('status'))
+    _maybe_sync()
     return {'logged_in': True, 'online': True, 'username': j.get('username') or '',
-            'status': j.get('status') or 'ok', 'quota': j.get('quota')}
+            'status': j.get('status') or 'ok', 'quota': j.get('quota'),
+            'offline_pending': len(_load_ledger(d))}
 
 
 def login(username, password):
@@ -166,6 +321,7 @@ def login(username, password):
         d['token'] = j['token']
         d['expires'] = j.get('expires') or 0
         _save(d)
+        _save_snap(d, j.get('quota'), j.get('status'))
         return {'ok': True, 'quota': j.get('quota')}
     if s == 0:
         return {'ok': False, 'error': '无法连接授权服务器，请检查网络'}
@@ -185,6 +341,7 @@ def register(username, password, phone='', email='', company='', invite_code='')
         d['token'] = j['token']
         d['expires'] = j.get('expires') or 0
         _save(d)
+        _save_snap(d, j.get('quota'), j.get('status'))
         return {'ok': True, 'quota': j.get('quota'),
                 'status': j.get('status') or 'ok'}
     if s == 0:
@@ -198,12 +355,15 @@ def logout():
     d['token'] = ''
     d['username'] = ''
     d['expires'] = 0
+    d.pop('quota_snap', None)
+    d.pop('ledger', None)
     _save(d)
     return {'ok': True}
 
 
 def deduct(fmt, note=''):
-    """转换开始前扣 1 次。返回 ok / code（login_required|offline|monthly_exhausted|…）。"""
+    """转换开始前扣 1 次。返回 ok / code（login_required|offline|monthly_exhausted|…）。
+    断网时走离线兜底（本地记账，联网后自动补扣同步）。"""
     d = _load()
     if not d.get('token'):
         return {'ok': False, 'code': 'login_required', 'error': '请先登录'}
@@ -211,8 +371,9 @@ def deduct(fmt, note=''):
         return {'ok': False, 'code': 'login_required', 'error': '登录已过期，请重新登录'}
     s, j = _http('/api/deduct', 'POST', {'fmt': fmt, 'note': note})
     if s == 0:
-        return {'ok': False, 'code': 'offline', 'error': '无法连接授权服务器'}
+        return _offline_deduct(d, fmt, note)
     if s == 200:
+        _save_snap(d, j.get('quota'))
         return {'ok': True, 'tx_id': j.get('tx_id'), 'quota': j.get('quota')}
     if s == 401:
         return {'ok': False, 'code': 'login_required', 'error': '请先登录'}
@@ -246,9 +407,23 @@ _CODE_MSG = {
 
 
 def refund(tx_id):
-    """转换失败退还次数（后台线程调用，失败不影响主流程）。"""
+    """转换失败退还次数（后台线程调用，失败不影响主流程）。
+    离线扣次（offline:nonce）→ 从本地账本删除该笔。"""
+    tid = str(tx_id or '')
+    if tid.startswith('offline:'):
+        with _ledger_lock:
+            d = _load()
+            items = _load_ledger(d)
+            nonce = tid[len('offline:'):]
+            left = [x for x in items if x.get('nonce') != nonce]
+            if len(left) != len(items):
+                _write_ledger(d, left)
+        return True
     try:
-        _http('/api/refund', 'POST', {'tx_id': tx_id})
+        s, j = _http('/api/refund', 'POST', {'tx_id': tx_id})
+        if s == 200 and isinstance(j.get('quota'), dict):
+            with _ledger_lock:
+                _save_snap(_load(), j['quota'])
     except Exception:
         pass
     return True
