@@ -148,8 +148,20 @@ footer#bar b{color:var(--txt)}
 .cap-row{display:flex;gap:8px;align-items:center}
 .cap-row input{flex:1;min-width:0;text-transform:uppercase;letter-spacing:.2em}
 #li-cap-cv{border:1px solid var(--line2);border-radius:6px;cursor:pointer;flex:none}
+.pw-wrap{position:relative;display:flex;align-items:center}
+.pw-wrap input{width:100%;padding-right:38px}
+.pw-eye{position:absolute;right:5px;display:flex;align-items:center;justify-content:center;
+  background:none;border:none;cursor:pointer;padding:4px;color:var(--mut);line-height:0}
+.pw-eye:hover{color:var(--cy)}
+.pw-eye svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.7;
+  stroke-linecap:round;stroke-linejoin:round}
+.pw-eye .ic-off{display:none}
+.pw-eye.on .ic-on{display:none}
+.pw-eye.on .ic-off{display:block}
 .uc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin:14px 0 18px}
 .uc-item{background:#0e1726;border:1px solid var(--line2);border-radius:8px;padding:10px 14px}
+.uc-item.wide{grid-column:1/-1}
+.uc-item.wide b{font-size:13.5px;white-space:nowrap;font-family:Consolas,monospace;letter-spacing:.02em}
 .uc-item small{display:block;color:var(--dim);font-size:12px;margin-bottom:5px}
 .uc-item b{font-size:15px;color:var(--txt)}
 .uc-tip{color:var(--dim);font-size:13.5px;line-height:1.8;margin:8px 0 14px}
@@ -334,9 +346,12 @@ footer#bar b{color:var(--txt)}
     </section>
     <section class="card" id="uc-passcard">
       <h2>修改密码</h2>
-      <div class="row"><label>原密码</label><input class="path" id="uc-pass-old" type="password" placeholder="当前密码"></div>
-      <div class="row"><label>新密码</label><input class="path" id="uc-pass-new" type="password" placeholder="至少 6 位"></div>
-      <div class="row"><label>确认新密码</label><input class="path" id="uc-pass-new2" type="password" placeholder="再输入一次新密码"></div>
+      <div class="row"><label>原密码</label><div class="pw-wrap"><input class="path" id="uc-pass-old" type="password" placeholder="当前密码">
+        <button type="button" class="pw-eye" tabindex="-1" title="显示 / 隐藏密码"><svg class="ic-on" viewBox="0 0 24 24"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg><svg class="ic-off" viewBox="0 0 24 24"><path d="M4 4l16 16M9.9 5.1A10.6 10.6 0 0 1 12 4.9c6.5 0 10 7.1 10 7.1a17.5 17.5 0 0 1-3.2 4M6.1 6.9A16.9 16.9 0 0 0 2 12s3.5 7.1 10 7.1c1.4 0 2.7-.3 3.9-.8"/><path d="M9.5 9.6a2.9 2.9 0 0 0 4 4"/></svg></button></div></div>
+      <div class="row"><label>新密码</label><div class="pw-wrap"><input class="path" id="uc-pass-new" type="password" placeholder="至少 6 位">
+        <button type="button" class="pw-eye" tabindex="-1" title="显示 / 隐藏密码"><svg class="ic-on" viewBox="0 0 24 24"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg><svg class="ic-off" viewBox="0 0 24 24"><path d="M4 4l16 16M9.9 5.1A10.6 10.6 0 0 1 12 4.9c6.5 0 10 7.1 10 7.1a17.5 17.5 0 0 1-3.2 4M6.1 6.9A16.9 16.9 0 0 0 2 12s3.5 7.1 10 7.1c1.4 0 2.7-.3 3.9-.8"/><path d="M9.5 9.6a2.9 2.9 0 0 0 4 4"/></svg></button></div></div>
+      <div class="row"><label>确认新密码</label><div class="pw-wrap"><input class="path" id="uc-pass-new2" type="password" placeholder="再输入一次新密码">
+        <button type="button" class="pw-eye" tabindex="-1" title="显示 / 隐藏密码"><svg class="ic-on" viewBox="0 0 24 24"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg><svg class="ic-off" viewBox="0 0 24 24"><path d="M4 4l16 16M9.9 5.1A10.6 10.6 0 0 1 12 4.9c6.5 0 10 7.1 10 7.1a17.5 17.5 0 0 1-3.2 4M6.1 6.9A16.9 16.9 0 0 0 2 12s3.5 7.1 10 7.1c1.4 0 2.7-.3 3.9-.8"/><path d="M9.5 9.6a2.9 2.9 0 0 0 4 4"/></svg></button></div></div>
       <div class="btnbar" style="margin:10px 0 0">
         <button class="primary" id="uc-pass-do">修改密码</button>
         <span id="uc-pass-note" style="color:var(--dim);font-size:13px"></span>
@@ -350,7 +365,7 @@ footer#bar b{color:var(--txt)}
       </div>
       <div class="btnbar" style="margin:0">
         <button class="primary" id="uc-check">检查更新</button>
-        <span id="uc-upd-note" style="color:var(--dim);font-size:13px">通过 GitHub Releases 检查新版本</span>
+        <span id="uc-upd-note" style="color:var(--dim);font-size:13px"></span>
       </div>
     </section>
     </div><!-- /page-user -->
@@ -389,7 +404,23 @@ footer#bar b{color:var(--txt)}
     <label>用户名</label>
     <input id="li-user" placeholder="3-32 位字母 / 数字 / 下划线 / 中文" autocomplete="username">
     <label>密码</label>
-    <input id="li-pass" type="password" placeholder="至少 6 位" autocomplete="current-password">
+    <div class="pw-wrap">
+      <input id="li-pass" type="password" placeholder="至少 6 位" autocomplete="current-password">
+      <button type="button" class="pw-eye" tabindex="-1" title="显示 / 隐藏密码">
+        <svg class="ic-on" viewBox="0 0 24 24"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg>
+        <svg class="ic-off" viewBox="0 0 24 24"><path d="M4 4l16 16M9.9 5.1A10.6 10.6 0 0 1 12 4.9c6.5 0 10 7.1 10 7.1a17.5 17.5 0 0 1-3.2 4M6.1 6.9A16.9 16.9 0 0 0 2 12s3.5 7.1 10 7.1c1.4 0 2.7-.3 3.9-.8"/><path d="M9.5 9.6a2.9 2.9 0 0 0 4 4"/></svg>
+      </button>
+    </div>
+    <div id="li-pass2-row" class="hidden">
+      <label>确认密码</label>
+      <div class="pw-wrap">
+        <input id="li-pass2" type="password" placeholder="再输入一次密码" autocomplete="new-password">
+        <button type="button" class="pw-eye" tabindex="-1" title="显示 / 隐藏密码">
+          <svg class="ic-on" viewBox="0 0 24 24"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg>
+          <svg class="ic-off" viewBox="0 0 24 24"><path d="M4 4l16 16M9.9 5.1A10.6 10.6 0 0 1 12 4.9c6.5 0 10 7.1 10 7.1a17.5 17.5 0 0 1-3.2 4M6.1 6.9A16.9 16.9 0 0 0 2 12s3.5 7.1 10 7.1c1.4 0 2.7-.3 3.9-.8"/><path d="M9.5 9.6a2.9 2.9 0 0 0 4 4"/></svg>
+        </button>
+      </div>
+    </div>
     <label>验证码</label>
     <div class="cap-row">
       <input id="li-cap" placeholder="4 位字母" maxlength="4" autocomplete="off" spellcheck="false">
@@ -1088,7 +1119,11 @@ function renderUserPage(){
   }
   const q = LIC.quota || {};
   if (!UC.profile) loadProfile();
-  const fmt = ts => ts ? new Date(ts * 1000).toLocaleDateString() : '-';
+  const fmt = ts => {
+    if (!ts) return '-';
+    const d = new Date(ts * 1000);
+    return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  };
   const offline = LIC.online ? '' : '<p class="uc-warn">⚠ 无法连接授权服务器，以下为最近一次查询结果</p>';
   card.innerHTML = '<h2>转换额度</h2>' + offline +
     '<div class="uc-grid">' +
@@ -1096,7 +1131,8 @@ function renderUserPage(){
     '<div class="uc-item"><small>本月剩余 / 上限</small><b>' + (q.monthly_left ?? '-') + ' / ' + (q.monthly_limit ?? '-') + '</b></div>' +
     '<div class="uc-item"><small>年度剩余 / 上限</small><b>' + (q.yearly_left ?? '-') + ' / ' + (q.yearly_limit ?? '-') + '</b></div>' +
     '<div class="uc-item"><small>累计已转换</small><b>' + (q.total_used ?? '-') + ' 次</b></div>' +
-    '<div class="uc-item"><small>年度周期</small><b>' + fmt(q.year_start) + ' ~ ' + fmt(q.year_end) + '</b></div>' +
+    '<div class="uc-item"><small>有效期至</small><b>' + (q.valid_until ? fmt(q.valid_until) : '-') + '</b></div>' +
+    '<div class="uc-item wide"><small>年度周期</small><b>' + fmt(q.year_start) + ' ~ ' + fmt(q.year_end) + '</b></div>' +
     '</div>' +
     '<div class="btnbar" style="margin:0">' +
     '<button class="primary" id="uc-refresh">刷新</button>' +
@@ -1197,11 +1233,19 @@ function drawCaptcha(){
 }
 $('#li-cap-cv').addEventListener('click', drawCaptcha);
 $('#li-cap').addEventListener('keydown', e => { if (e.key === 'Enter') doLicAuth(); });
+// 密码框小眼睛：点击切换明文/密文
+$$('.pw-eye').forEach(b => b.addEventListener('click', () => {
+  const inp = b.parentElement.querySelector('input');
+  const show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  b.classList.toggle('on', show);
+}));
 function openLicModal(mode, presetErr){
   licMode = mode || 'login';
   $('#lic-modal').classList.remove('hidden');
   $('#li-err').textContent = presetErr || '';
   $('#li-pass').value = '';
+  $('#li-pass2').value = '';
   $('#li-cap').value = '';
   drawCaptcha();
   syncLicTabs();
@@ -1212,6 +1256,7 @@ function syncLicTabs(){
   $('#ltab-reg').classList.toggle('on', reg);
   $('#ltab-login').classList.toggle('on', !reg);
   $('#li-extra').classList.toggle('hidden', !reg);
+  $('#li-pass2-row').classList.toggle('hidden', !reg);
   $('#lic-title').textContent = reg ? '注册新账号' : '登录';
   $('#li-go').textContent = reg ? '注册并登录' : '登录';
 }
@@ -1223,6 +1268,10 @@ $('#li-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLicAut
 async function doLicAuth(){
   const user = $('#li-user').value.trim(), pass = $('#li-pass').value;
   if (!user || !pass){ $('#li-err').textContent = '请填写用户名和密码'; return; }
+  if (licMode === 'reg'){
+    if (pass.length < 6){ $('#li-err').textContent = '密码至少 6 位'; return; }
+    if (pass !== $('#li-pass2').value){ $('#li-err').textContent = '两次输入的密码不一致'; return; }
+  }
   const cap = $('#li-cap').value.trim();
   if (cap.toLowerCase() !== licCapCode.toLowerCase()){
     $('#li-err').textContent = '验证码不正确，请重新输入';

@@ -41,6 +41,9 @@ It also provides:
 ## Quick Start / 快速开始
 
 ```bash
+# 国内推荐（更快）
+git clone https://gitee.com/darling5/geoconvert.git
+# 或 GitHub
 git clone https://github.com/Darling5/geoconvert.git
 cd geoconvert
 pip install -r requirements.txt

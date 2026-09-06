@@ -25,7 +25,9 @@ from urllib.parse import urlparse, parse_qs, unquote
 from .params import build_argv, detect_format, validate
 from . import license as lic
 
-APP_VERSION = '1.5.1'
+APP_VERSION = '1.5.2'
+GITEE_API = 'https://gitee.com/api/v5/repos/darling5/geoconvert/releases/latest'
+GITEE_URL = 'https://gitee.com/darling5/geoconvert/releases/latest'
 RELEASES_API = 'https://api.github.com/repos/Darling5/geoconvert/releases/latest'
 RELEASES_URL = 'https://github.com/Darling5/geoconvert/releases/latest'
 
@@ -44,25 +46,42 @@ def _ver_tuple(v):
 
 
 def check_update(force=False):
-    """比对 GitHub 最新 Release。结果缓存 30 分钟；网络失败返回 error。"""
+    """比对最新 Release：Gitee 优先（国内访问快），失败回退 GitHub。结果缓存 30 分钟。"""
     now = time.time()
     if not force and _update_cache['data'] and now - _update_cache['t'] < 1800:
         return _update_cache['data']
-    out = {'version': APP_VERSION, 'latest': None, 'url': RELEASES_URL,
-           'update': False, 'error': None}
+    out = {'version': APP_VERSION, 'latest': None, 'url': GITEE_URL,
+           'update': False, 'error': None, 'source': None}
+    # 1) Gitee（国内源）
     try:
         req = urllib.request.Request(
-            RELEASES_API, headers={'User-Agent': 'geoconvert/' + APP_VERSION,
-                                   'Accept': 'application/vnd.github+json'})
-        with urllib.request.urlopen(req, timeout=8) as r:
+            GITEE_API, headers={'User-Agent': 'geoconvert/' + APP_VERSION})
+        with urllib.request.urlopen(req, timeout=6) as r:
             data = json.loads(r.read().decode('utf-8'))
         latest = str(data.get('tag_name') or '').strip()
         if latest:
             out['latest'] = latest
-            out['url'] = data.get('html_url') or RELEASES_URL
+            out['url'] = 'https://gitee.com/darling5/geoconvert/releases/tag/' + latest
             out['update'] = _ver_tuple(latest) > _ver_tuple(APP_VERSION)
-    except Exception as e:
-        out['error'] = '网络检查失败：%s' % e
+            out['source'] = 'gitee'
+    except Exception:
+        pass
+    # 2) GitHub 兜底（Gitee 不可达或未发布时）
+    if not out['latest']:
+        try:
+            req = urllib.request.Request(
+                RELEASES_API, headers={'User-Agent': 'geoconvert/' + APP_VERSION,
+                                       'Accept': 'application/vnd.github+json'})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                data = json.loads(r.read().decode('utf-8'))
+            latest = str(data.get('tag_name') or '').strip()
+            if latest:
+                out['latest'] = latest
+                out['url'] = data.get('html_url') or RELEASES_URL
+                out['update'] = _ver_tuple(latest) > _ver_tuple(APP_VERSION)
+                out['source'] = 'github'
+        except Exception as e:
+            out['error'] = '网络检查失败：%s' % e
     _update_cache['data'] = out
     _update_cache['t'] = now
     return out
