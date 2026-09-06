@@ -20,6 +20,7 @@ a = Analysis(
     datas=[
         (os.path.join(ROOT, 'geoconvert', 'webui', 'index.html'), 'geoconvert/webui'),
         (os.path.join(ROOT, 'geoconvert', 'webui', 'preview.js'), 'geoconvert/webui'),
+        (os.path.join(ROOT, 'geoconvert', 'webui', 'cc_globe.js'), 'geoconvert/webui'),
         (os.path.join(ROOT, 'geoconvert', 'webui', 'appicon.ico'), 'geoconvert/webui'),
         (os.path.join(ROOT, 'geoconvert', 'webui', 'cesium'), 'geoconvert/webui/cesium'),
     ],

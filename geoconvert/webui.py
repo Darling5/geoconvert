@@ -17,15 +17,16 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, unquote, quote
+from urllib.parse import urlparse, parse_qs, unquote, quote, urljoin
 
 from .params import build_argv, detect_format, validate
 from . import license as lic
 
-APP_VERSION = '1.5.8'
+APP_VERSION = '1.5.9'
 GITEE_API = 'https://gitee.com/api/v5/repos/darling5/geoconvert/releases/latest'
 GITEE_URL = 'https://gitee.com/darling5/geoconvert/releases/latest'
 RELEASES_API = 'https://api.github.com/repos/Darling5/geoconvert/releases/latest'
@@ -93,18 +94,55 @@ DEFAULT_TIDT_KEY = '654e9ced28089ca0b5caff0d5c23d5b6'
 _UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _encode_url_non_ascii(u):
+    """只把 URL 里的非 ASCII 字符百分号编码（已有 %XX 不受影响）。
+
+    高德 wb.amap.com → www.amap.com 的 Location 头塞的是未编码 UTF-8 中文，
+    urllib 自动跟随时 http.client 会 UnicodeEncodeError；header 按 latin-1
+    解码后需先还原成合法 URL 才能继续请求。还原时先试 latin-1→UTF-8
+    去 mojibake（"æ·±å³"→"深圳"），失败再原样编码。
+    """
+    def fix(m):
+        s = m.group(0)
+        try:
+            s = s.encode('latin-1').decode('utf-8')
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+        return quote(s)
+    return re.sub(r'[^\x00-\x7f]+', fix, u)
+
+
 def expand_share_url(url):
-    """跟随重定向展开地图短链（如 surl.amap.com/xxx → uri.amap.com/marker?position=…）。"""
+    """跟随重定向展开地图短链（如 surl.amap.com/xxx → wb.amap.com → www.amap.com/?p=…）。
+
+    手动逐跳跟随：自动跟随对 Location 含未编码中文的跳转会抛
+    UnicodeEncodeError（http.client 无法把非 ASCII 写进请求行）。
+    """
     url = (url or '').strip()
     if not re.match(r'^https?://', url, re.I):
         return {'error': '仅支持 http/https 链接'}
     low = url.lower()
     if not any(k in low for k in ('amap', 'qq.com', 'baidu', 'bing', 'google', 'map')):
         return {'error': '不是可识别的地图链接'}
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
     try:
-        req = urllib.request.Request(url, headers=_UA)
-        with _direct_opener.open(req, timeout=10) as r:
-            return {'url': r.url or url}
+        for _ in range(5):
+            req = urllib.request.Request(url, headers=_UA)
+            try:
+                with opener.open(req, timeout=10) as r:
+                    r.read(1)
+                    return {'url': url}
+            except urllib.error.HTTPError as e:
+                loc = e.headers.get('Location')
+                if not loc or not (300 <= e.code < 400):
+                    raise
+                url = _encode_url_non_ascii(urljoin(url, loc))
+        return {'url': url}
     except Exception as e:
         return {'error': '链接展开失败：%s' % e}
 
@@ -542,6 +580,8 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_file(_resource_path('webui/index.html'))
         elif u.path == '/preview.js':
             self._serve_file(_resource_path('webui/preview.js'))
+        elif u.path == '/cc_globe.js':
+            self._serve_file(_resource_path('webui/cc_globe.js'))
         elif u.path.startswith('/cesium/'):
             self._serve_static(_resource_path('webui/cesium'),
                                u.path[len('/cesium/'):], cache='public, max-age=86400')

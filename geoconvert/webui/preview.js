@@ -782,19 +782,74 @@
     return provider;
   }
 
-  async function ensureEngine() {
-    if (viewer) return;
-    if (engineLoading) throw new Error('引擎加载中，请稍候');
-    engineLoading = true;
-    try {
-      if (!window.Cesium) {
+  let _cesiumLoading = null;
+
+  function ensureCesium() {
+    // 幂等加载 Cesium 内核 + 控件样式（坐标转换 3D 地球预览共用）
+    if (window.Cesium) return Promise.resolve();
+    if (!_cesiumLoading) {
+      _cesiumLoading = (async () => {
         window.CESIUM_BASE_URL = new URL('cesium/', document.baseURI).href;
         const link = document.createElement('link');
         link.rel = 'stylesheet';
         link.href = 'cesium/Widgets/widgets.css';
         document.head.appendChild(link);
         await loadScript('cesium/Cesium.js');
+      })();
+    }
+    return _cesiumLoading;
+  }
+
+  async function addImageryLayers(v) {
+    // 天地图 key 从 config.json 读取（界面「3D 预览」页可填，tianditu.gov.cn 免费申请）
+    let tdtKey = '';
+    try {
+      const r = await fetch('api/config');
+      if (r.ok) tdtKey = ((await r.json()).tianditu_key || '').trim();
+    } catch (e) { /* 配置读取失败：只叠 ArcGIS */ }
+    // 在线卫星图叠加（WGS-84 对齐）；无网络时静默降级到内置 NaturalEarthII
+    try {
+      // ArcGIS 偏远地区/远海 z14+ 回「Map data not yet available」灰图（HTTP 200），
+      // noGray 检测命中换全透明瓦片，透出下层内置底图——变糊但不会变灰
+      v.imageryLayers.addImageryProvider(noGray(new Cesium.UrlTemplateImageryProvider({
+        url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        maximumLevel: 19, credit: 'Esri World Imagery',
+      })));
+      // 天地图影像盖在 ArcGIS 之上：国内到 z18 都是真实影像（偏远地区 ArcGIS z19 也回灰图）；
+      // 更近时 Cesium 自动放大 z18 上级瓦片——变糊但不会变灰。
+      // rectangle 限定中国范围省流量：境外（含未填经纬度落在赤道 0,0 的模型）天地图
+      // 各层级都回不透明「此级别下，该区域无影像」占位灰图；noGray 再兜底国内
+      // 极偏远 z17/18 个别无影像瓦片
+      if (tdtKey) {
+        v.imageryLayers.addImageryProvider(noGray(new Cesium.UrlTemplateImageryProvider({
+          url: 'https://t{s}.tianditu.gov.cn/DataServer?T=img_w&x={x}&y={y}&l={z}&tk=' + tdtKey,
+          subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'],
+          tilingScheme: new Cesium.WebMercatorTilingScheme(),
+          rectangle: Cesium.Rectangle.fromDegrees(73.5, 3.8, 135.5, 53.6),
+          maximumLevel: 18, credit: '国家地理信息公共服务平台 天地图影像',
+        })));
       }
+    } catch (e) { /* 离线环境：保留 NaturalEarthII */ }
+    // 天地图中文地名注记层（同主系统 TiandituProvider 的 cia_w 影像模式）
+    try {
+      if (tdtKey) {
+        v.imageryLayers.addImageryProvider(noGray(new Cesium.UrlTemplateImageryProvider({
+          url: 'https://t{s}.tianditu.gov.cn/DataServer?T=cia_w&x={x}&y={y}&l={z}&tk=' + tdtKey,
+          subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'],
+          tilingScheme: new Cesium.WebMercatorTilingScheme(),
+          rectangle: Cesium.Rectangle.fromDegrees(73.5, 3.8, 135.5, 53.6),
+          maximumLevel: 18, credit: '国家地理信息公共服务平台 天地图',
+        })));
+      }
+    } catch (e) { /* 离线环境：无注记，底图照常 */ }
+  }
+
+  async function ensureEngine() {
+    if (viewer) return;
+    if (engineLoading) throw new Error('引擎加载中，请稍候');
+    engineLoading = true;
+    try {
+      await ensureCesium();
       const credit = document.createElement('div');
       credit.style.display = 'none';
       document.body.appendChild(credit);
@@ -807,47 +862,7 @@
             Cesium.buildModuleUrl('Assets/Textures/NaturalEarthII'))),
         creditContainer: credit,
       });
-      // 天地图 key 从 config.json 读取（界面「3D 预览」页可填，tianditu.gov.cn 免费申请）
-      let tdtKey = '';
-      try {
-        const r = await fetch('api/config');
-        if (r.ok) tdtKey = ((await r.json()).tianditu_key || '').trim();
-      } catch (e) { /* 配置读取失败：只叠 ArcGIS */ }
-      // 在线卫星图叠加（WGS-84 对齐）；无网络时静默降级到内置 NaturalEarthII
-      try {
-        // ArcGIS 偏远地区/远海 z14+ 回「Map data not yet available」灰图（HTTP 200），
-        // noGray 检测命中换全透明瓦片，透出下层内置底图——变糊但不会变灰
-        viewer.imageryLayers.addImageryProvider(noGray(new Cesium.UrlTemplateImageryProvider({
-          url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-          maximumLevel: 19, credit: 'Esri World Imagery',
-        })));
-        // 天地图影像盖在 ArcGIS 之上：国内到 z18 都是真实影像（偏远地区 ArcGIS z19 也回灰图）；
-        // 更近时 Cesium 自动放大 z18 上级瓦片——变糊但不会变灰。
-        // rectangle 限定中国范围省流量：境外（含未填经纬度落在赤道 0,0 的模型）天地图
-        // 各层级都回不透明「此级别下，该区域无影像」占位灰图；noGray 再兜底国内
-        // 极偏远 z17/18 个别无影像瓦片
-        if (tdtKey) {
-          viewer.imageryLayers.addImageryProvider(noGray(new Cesium.UrlTemplateImageryProvider({
-            url: 'https://t{s}.tianditu.gov.cn/DataServer?T=img_w&x={x}&y={y}&l={z}&tk=' + tdtKey,
-            subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'],
-            tilingScheme: new Cesium.WebMercatorTilingScheme(),
-            rectangle: Cesium.Rectangle.fromDegrees(73.5, 3.8, 135.5, 53.6),
-            maximumLevel: 18, credit: '国家地理信息公共服务平台 天地图影像',
-          })));
-        }
-      } catch (e) { /* 离线环境：保留 NaturalEarthII */ }
-      // 天地图中文地名注记层（同主系统 TiandituProvider 的 cia_w 影像模式）
-      try {
-        if (tdtKey) {
-          viewer.imageryLayers.addImageryProvider(noGray(new Cesium.UrlTemplateImageryProvider({
-            url: 'https://t{s}.tianditu.gov.cn/DataServer?T=cia_w&x={x}&y={y}&l={z}&tk=' + tdtKey,
-            subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'],
-            tilingScheme: new Cesium.WebMercatorTilingScheme(),
-            rectangle: Cesium.Rectangle.fromDegrees(73.5, 3.8, 135.5, 53.6),
-            maximumLevel: 18, credit: '国家地理信息公共服务平台 天地图',
-          })));
-        }
-      } catch (e) { /* 离线环境：无注记，底图照常 */ }
+      await addImageryLayers(viewer);
       viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#2a2f3a');
       // Cesium 默认 depthTestAgainstTerrain=false：globe 深度不遮挡 3D Tiles，
       // 模型沉入地下仍透视显示（用户会误以为位置没变）。开启后地下部分被地面正确遮挡。
@@ -1029,6 +1044,9 @@
     if (showEl) showEl.addEventListener('change', () => { if (gizmo) gizmo.setShow(showEl.checked); });
     bindInputs();
   }
+
+  // 坐标转换 3D 地球预览（cc_globe.js）复用的共享底座
+  window.GeoCesium = { ensureCesium, addImagery: addImageryLayers };
 
   window.GeoPreview = {
     bind,
