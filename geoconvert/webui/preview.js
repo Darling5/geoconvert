@@ -867,6 +867,8 @@
       // Cesium 默认 depthTestAgainstTerrain=false：globe 深度不遮挡 3D Tiles，
       // 模型沉入地下仍透视显示（用户会误以为位置没变）。开启后地下部分被地面正确遮挡。
       viewer.scene.globe.depthTestAgainstTerrain = true;
+      // 滚轮缩放减速：zoomFactor 默认 5 太快（同时作用于滚轮/右键拖拽/触控捏合）
+      viewer.scene.screenSpaceCameraController.zoomFactor = 1;
       $('#pv-viewer').classList.add('ready');
     } finally {
       engineLoading = false;

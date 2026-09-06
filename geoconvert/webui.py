@@ -26,7 +26,7 @@ from urllib.parse import urlparse, parse_qs, unquote, quote, urljoin
 from .params import build_argv, detect_format, validate
 from . import license as lic
 
-APP_VERSION = '1.5.9'
+APP_VERSION = '1.5.10'
 GITEE_API = 'https://gitee.com/api/v5/repos/darling5/geoconvert/releases/latest'
 GITEE_URL = 'https://gitee.com/darling5/geoconvert/releases/latest'
 RELEASES_API = 'https://api.github.com/repos/Darling5/geoconvert/releases/latest'

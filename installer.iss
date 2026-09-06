@@ -4,7 +4,7 @@
 ; 设计: PrivilegesRequired=lowest → 免管理员/UAC，装到 %LocalAppData%\Programs\geoconvert
 
 #define MyAppName "geoconvert"
-#define MyAppVersion "1.5.9"
+#define MyAppVersion "1.5.10"
 #define MyAppExeName "geoconvert.exe"
 #define MyAppPublisher "智环未来（深圳）科技有限公司"
 

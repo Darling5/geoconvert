@@ -34,6 +34,8 @@
       });
       await window.GeoCesium.addImagery(viewer);
       viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#2a2f3a');
+      // 滚轮缩放减速（与「3D 预览」页一致）
+      viewer.scene.screenSpaceCameraController.zoomFactor = 1;
       $('#cc-viewer').classList.add('ready');
       status('', '');
     } catch (e) {
@@ -84,5 +86,5 @@
     if (viewer && pin) { viewer.entities.remove(pin); pin = null; }
   }
 
-  window.CCGlobe = { ensure, mark, clearPin };
+  window.CCGlobe = { ensure, mark, clearPin, viewer: () => viewer };
 })();
