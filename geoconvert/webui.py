@@ -20,12 +20,12 @@ import time
 import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, unquote, quote
 
 from .params import build_argv, detect_format, validate
 from . import license as lic
 
-APP_VERSION = '1.5.4'
+APP_VERSION = '1.5.5'
 GITEE_API = 'https://gitee.com/api/v5/repos/darling5/geoconvert/releases/latest'
 GITEE_URL = 'https://gitee.com/darling5/geoconvert/releases/latest'
 RELEASES_API = 'https://api.github.com/repos/Darling5/geoconvert/releases/latest'
@@ -85,6 +85,49 @@ def check_update(force=False):
     _update_cache['data'] = out
     _update_cache['t'] = now
     return out
+
+
+# 地图短链/地理编码：目标均为国内服务，强制直连不走系统代理（用户机器挂代理时更稳）
+_direct_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+DEFAULT_TIDT_KEY = '654e9ced28089ca0b5caff0d5c23d5b6'
+_UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+
+
+def expand_share_url(url):
+    """跟随重定向展开地图短链（如 surl.amap.com/xxx → uri.amap.com/marker?position=…）。"""
+    url = (url or '').strip()
+    if not re.match(r'^https?://', url, re.I):
+        return {'error': '仅支持 http/https 链接'}
+    low = url.lower()
+    if not any(k in low for k in ('amap', 'qq.com', 'baidu', 'bing', 'google', 'map')):
+        return {'error': '不是可识别的地图链接'}
+    try:
+        req = urllib.request.Request(url, headers=_UA)
+        with _direct_opener.open(req, timeout=10) as r:
+            return {'url': r.url or url}
+    except Exception as e:
+        return {'error': '链接展开失败：%s' % e}
+
+
+def geocode_addr(addr):
+    """天地图地理编码：地址文本 → WGS-84(CGCS2000) 经纬度。"""
+    addr = (addr or '').strip()
+    if not addr:
+        return {'error': '地址为空'}
+    key = (load_config().get('tianditu_key') or '').strip() or DEFAULT_TIDT_KEY
+    ds = json.dumps({'keyWord': addr}, ensure_ascii=False)
+    api = ('https://api.tianditu.gov.cn/geocoder?ds=' + quote(ds) + '&tk=' + key)
+    try:
+        req = urllib.request.Request(api, headers=_UA)
+        with _direct_opener.open(req, timeout=10) as r:
+            j = json.loads(r.read().decode('utf-8'))
+    except Exception as e:
+        return {'error': '地址检索失败（网络不可用）：%s' % e}
+    loc = j.get('location') or {}
+    if str(j.get('status')) == '0' and loc.get('lon') and loc.get('lat'):
+        return {'lon': float(loc['lon']), 'lat': float(loc['lat']),
+                'addr': addr, 'vendor': 'tianditu'}
+    return {'error': '地址检索无结果，请换个写法（如加上城市名，例：深圳 臣田工业区36）'}
 
 
 class State:
@@ -475,6 +518,10 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == '/api/check-update':
             force = (q.get('force') or [''])[0] in ('1', 'true')
             self._send(200, check_update(force))
+        elif u.path == '/api/expand-url':
+            self._send(200, expand_share_url((q.get('url') or [''])[0]))
+        elif u.path == '/api/geocode':
+            self._send(200, geocode_addr((q.get('addr') or [''])[0]))
         elif u.path == '/api/license/status':
             self._send(200, lic.status())
         else:

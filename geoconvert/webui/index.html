@@ -263,6 +263,7 @@ footer#bar b{color:var(--txt)}
       <button id="cc-use-tif">填入 TIF 中心</button>
       <button id="cc-copy">复制</button></div>
     <div class="hint">自动识别来源并转 WGS-84：高德/腾讯 = GCJ-02，百度 = BD-09，必应/Google = WGS-84；
+      高德短链（surl.amap.com）自动展开；链接只有地址没有坐标时自动联网检索（天地图）。
       纯坐标串按 <select id="cc-src" class="cc-src">
         <option value="gcj02">GCJ-02（高德/腾讯坐标）</option>
         <option value="wgs84">WGS-84（GPS 坐标）</option>
@@ -622,8 +623,17 @@ function ccParse(input){
     if (m) return {lon: parseFloat(m[2]), lat: parseFloat(m[1]), vendor: 'google', source: 'wgs84'};
     return tryKeys(['q', 'll', 'center'], 'google', 'wgs84');
   }
-  if (host.includes('amap.com'))
-    return tryKeys(['p', 'position', 'marker', 'pos', 'lon', 'coords', 'coordinate'], 'amap', 'gcj02');
+  if (host.includes('amap.com')){
+    // www.amap.com/?p=POI_ID,lat,lng,名称,地址 —— 高德分享点标记，GCJ-02，lat 在前
+    const p = q.get('p');
+    if (p){
+      const parts = p.split(',');
+      const lat = parseFloat(parts[1]), lng = parseFloat(parts[2]);
+      if (!isNaN(lat) && !isNaN(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180)
+        return {lon: lng, lat, vendor: 'amap', source: 'gcj02'};
+    }
+    return tryKeys(['position', 'marker', 'pos', 'lon', 'coords', 'coordinate'], 'amap', 'gcj02');
+  }
   if (host.includes('qq.com'))
     return tryKeys(['center', 'coords', 'c', 'p', 'position'], 'qq', 'gcj02');
   if (host.includes('baidu.com') || host.includes('bdstatic.com'))
@@ -636,27 +646,75 @@ function ccParse(input){
   return null;
 }
 const CC_LABEL = {amap: '高德 GCJ-02', baidu: '百度 BD-09', qq: '腾讯 GCJ-02',
-                  bing: '必应 WGS-84', google: 'Google WGS-84'};
-function ccConvert(){
+                  bing: '必应 WGS-84', google: 'Google WGS-84', tianditu: '天地图 WGS-84'};
+let ccSeq = 0, ccTimer = null;
+function ccAddrFromUrl(url){
+  // 从地图搜索/分享链接提取待检索的地址文本（本身是坐标时返回 null 交给 ccParse）
+  try {
+    const u = new URL(url);
+    const t = (u.searchParams.get('q') || u.searchParams.get('name')
+               || u.searchParams.get('where') || '').trim();
+    if (!t) return null;
+    const nums = ccNums(t);
+    if (nums.length >= 2 && ccPair(nums[0], nums[1])) return null;
+    return t;
+  } catch(e){ return null; }
+}
+async function ccConvert(){
   const text = $('#cc-in').value.trim();
+  const mySeq = ++ccSeq;
   ccLast = null;
   if (!text){ $('#cc-out-row').classList.add('hidden'); return; }
-  const parsed = ccParse(text);
   $('#cc-out-row').classList.remove('hidden');
-  if (!parsed){
-    $('#cc-out').innerHTML = '<span class="src">无法识别</span>请粘贴地图分享链接，或坐标串（如 116.3,39.9）';
-    return;
+  const show = html => { if (mySeq === ccSeq) $('#cc-out').innerHTML = html; };
+  const finish = parsed => {
+    if (mySeq !== ccSeq) return;
+    if (!parsed){
+      show('<span class="src">无法识别</span>请粘贴地图分享链接（支持高德短链、必应/Google 搜索链接），或坐标串（如 116.3,39.9）');
+      return;
+    }
+    const src = parsed.vendor === 'raw' ? $('#cc-src').value : parsed.source;
+    const w = ccToWgs(parsed.lon, parsed.lat, src);
+    ccLast = {lon: w[0], lat: w[1]};
+    const label = parsed.vendor === 'raw'
+      ? '坐标串（' + $('#cc-src').selectedOptions[0].textContent + '）'
+      : (CC_LABEL[parsed.vendor] || parsed.vendor);
+    show('<span class="src">' + label + (parsed.addr ? '「' + parsed.addr + '」' : '')
+      + '</span>WGS-84 <b>' + w[0].toFixed(6) + ', ' + w[1].toFixed(6) + '</b>');
+  };
+  let parsed = ccParse(text);
+  if (parsed) return finish(parsed);
+  // URL 但直接解析失败：先展开短链（高德 surl / 腾讯 / 百度短链）再解析
+  if (/^https?:\/\//i.test(text)){
+    show('<span class="src">解析中</span>正在展开链接…');
+    try {
+      const r = await fetch('/api/expand-url?url=' + encodeURIComponent(text));
+      const j = await r.json();
+      if (mySeq !== ccSeq) return;
+      if (j.url && j.url !== text) parsed = ccParse(j.url);
+    } catch(e){}
+    if (parsed) return finish(parsed);
+    // 仍无坐标：提取地址文本走天地图地理编码（必应/Google/高德搜索链接）
+    const addr = ccAddrFromUrl(text);
+    if (addr){
+      show('<span class="src">解析中</span>正在检索「' + addr + '」…');
+      try {
+        const r = await fetch('/api/geocode?addr=' + encodeURIComponent(addr));
+        const j = await r.json();
+        if (mySeq !== ccSeq) return;
+        if (j.lon) parsed = {lon: j.lon, lat: j.lat, vendor: 'tianditu',
+                             source: 'wgs84', addr: j.addr || addr};
+        else if (j.error) return show('<span class="src">无法识别</span>' + j.error);
+      } catch(e){}
+    }
   }
-  const src = parsed.vendor === 'raw' ? $('#cc-src').value : parsed.source;
-  const w = ccToWgs(parsed.lon, parsed.lat, src);
-  ccLast = {lon: w[0], lat: w[1]};
-  const label = parsed.vendor === 'raw'
-    ? '坐标串（' + $('#cc-src').selectedOptions[0].textContent + '）' : CC_LABEL[parsed.vendor];
-  $('#cc-out').innerHTML = '<span class="src">' + label + '</span>WGS-84 <b>'
-    + w[0].toFixed(6) + ', ' + w[1].toFixed(6) + '</b>';
+  finish(parsed);
 }
 $('#cc-go').addEventListener('click', ccConvert);
-$('#cc-in').addEventListener('input', ccConvert);
+$('#cc-in').addEventListener('input', () => {
+  clearTimeout(ccTimer);
+  ccTimer = setTimeout(ccConvert, 300);
+});
 $('#cc-in').addEventListener('keydown', e => { if (e.key === 'Enter') ccConvert(); });
 $('#cc-src').addEventListener('change', ccConvert);
 $('#cc-use-ll').addEventListener('click', () => {
