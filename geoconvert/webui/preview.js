@@ -6,6 +6,7 @@
   'use strict';
   let viewer = null, tileset = null, gizmo = null;
   let curDir = '', pivot = [0, 0, 0];
+  let bvBox = null;  // 原始 root.boundingVolume.box（局部系，用于精确算模型高程范围）
   let t = { x: 0, y: 0, z: 0, heading: 0, pitch: 0, roll: 0, sx: 1, sy: 1, sz: 1 };
   let dragStartT = null;
   let engineLoading = false;
@@ -50,6 +51,7 @@
         R, Cesium.Matrix4.multiply(A, Rin, new Cesium.Matrix4()), new Cesium.Matrix4());
     }
     syncInputs();
+    updateElev();
   }
 
   function bakedMatrix() {
@@ -728,6 +730,58 @@
     });
   }
 
+  // ===== 灰色占位瓦片检测 =====
+  // ArcGIS 偏远地区/远海高层级回「Map data not yet available」（浅灰 204/237），
+  // 天地图境外/无影像区回「此级别下，该区域无影像」（暖灰 228），均为 HTTP 200
+  // 不透明灰图，直接盖住下层真实影像。共同特征：整块全灰且颜色数极少——真实
+  // 卫星影像不满足。命中换成全透明瓦片，让下层（ArcGIS / 内置底图）透出来。
+
+  let _blankTile = null;
+
+  function blankTile() {
+    if (!_blankTile) {
+      const c = document.createElement('canvas');
+      c.width = 256; c.height = 256;  // 全透明
+      _blankTile = c;
+    }
+    return _blankTile;
+  }
+
+  function isGrayPlaceholder(img) {
+    const w = img.width || 0, h = img.height || 0;
+    if (w < 8 || h < 8) return false;
+    const s = 9;
+    const c = document.createElement('canvas');
+    c.width = s; c.height = s;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, s, s);  // 缩到 9×9：占位图文字被平均进背景色
+    const d = ctx.getImageData(0, 0, s, s).data;
+    const colors = new Set();
+    let lightGray = 0;
+    const total = s * s;
+    for (let i = 0; i < d.length; i += 4) {
+      const r = d[i], g = d[i + 1], b = d[i + 2], a = d[i + 3];
+      if (a < 250) return false;  // 含透明像素 = 正常注记瓦片
+      if (Math.abs(r - g) > 8 || Math.abs(g - b) > 8 || Math.abs(r - b) > 8) return false;  // 彩色 → 真实影像
+      colors.add(((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4));
+      if (r >= 180 && r <= 250) lightGray++;
+    }
+    return lightGray / total >= 0.85 && colors.size <= 8;
+  }
+
+  function noGray(provider) {
+    const orig = provider.requestImage.bind(provider);
+    provider.requestImage = function (x, y, level) {
+      return Promise.resolve(orig(x, y, level)).then(function (img) {
+        try {
+          if (img && isGrayPlaceholder(img)) return blankTile();
+        } catch (e) { /* canvas 跨域不可读：跳过检测按原图返回 */ }
+        return img;
+      });
+    };
+    return provider;
+  }
+
   async function ensureEngine() {
     if (viewer) return;
     if (engineLoading) throw new Error('引擎加载中，请稍候');
@@ -761,34 +815,43 @@
       } catch (e) { /* 配置读取失败：只叠 ArcGIS */ }
       // 在线卫星图叠加（WGS-84 对齐）；无网络时静默降级到内置 NaturalEarthII
       try {
-        viewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({
+        // ArcGIS 偏远地区/远海 z14+ 回「Map data not yet available」灰图（HTTP 200），
+        // noGray 检测命中换全透明瓦片，透出下层内置底图——变糊但不会变灰
+        viewer.imageryLayers.addImageryProvider(noGray(new Cesium.UrlTemplateImageryProvider({
           url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
           maximumLevel: 19, credit: 'Esri World Imagery',
-        }));
-        // 天地图影像盖在 ArcGIS 之上：偏远地区 ArcGIS 高层级只回「Map data not yet available」
-        // 灰图（HTTP 200 占位图无法拦截），天地图 img_w 到 z18 仍是真实影像；
-        // 更近时 Cesium 自动放大 z18 上级瓦片——变糊但不会变灰
+        })));
+        // 天地图影像盖在 ArcGIS 之上：国内到 z18 都是真实影像（偏远地区 ArcGIS z19 也回灰图）；
+        // 更近时 Cesium 自动放大 z18 上级瓦片——变糊但不会变灰。
+        // rectangle 限定中国范围省流量：境外（含未填经纬度落在赤道 0,0 的模型）天地图
+        // 各层级都回不透明「此级别下，该区域无影像」占位灰图；noGray 再兜底国内
+        // 极偏远 z17/18 个别无影像瓦片
         if (tdtKey) {
-          viewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({
+          viewer.imageryLayers.addImageryProvider(noGray(new Cesium.UrlTemplateImageryProvider({
             url: 'https://t{s}.tianditu.gov.cn/DataServer?T=img_w&x={x}&y={y}&l={z}&tk=' + tdtKey,
             subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'],
             tilingScheme: new Cesium.WebMercatorTilingScheme(),
+            rectangle: Cesium.Rectangle.fromDegrees(73.5, 3.8, 135.5, 53.6),
             maximumLevel: 18, credit: '国家地理信息公共服务平台 天地图影像',
-          }));
+          })));
         }
       } catch (e) { /* 离线环境：保留 NaturalEarthII */ }
       // 天地图中文地名注记层（同主系统 TiandituProvider 的 cia_w 影像模式）
       try {
         if (tdtKey) {
-          viewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({
+          viewer.imageryLayers.addImageryProvider(noGray(new Cesium.UrlTemplateImageryProvider({
             url: 'https://t{s}.tianditu.gov.cn/DataServer?T=cia_w&x={x}&y={y}&l={z}&tk=' + tdtKey,
             subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'],
             tilingScheme: new Cesium.WebMercatorTilingScheme(),
+            rectangle: Cesium.Rectangle.fromDegrees(73.5, 3.8, 135.5, 53.6),
             maximumLevel: 18, credit: '国家地理信息公共服务平台 天地图',
-          }));
+          })));
         }
       } catch (e) { /* 离线环境：无注记，底图照常 */ }
       viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#2a2f3a');
+      // Cesium 默认 depthTestAgainstTerrain=false：globe 深度不遮挡 3D Tiles，
+      // 模型沉入地下仍透视显示（用户会误以为位置没变）。开启后地下部分被地面正确遮挡。
+      viewer.scene.globe.depthTestAgainstTerrain = true;
       $('#pv-viewer').classList.add('ready');
     } finally {
       engineLoading = false;
@@ -804,6 +867,7 @@
     const json = await res.json();
     const box = json && json.root && json.root.boundingVolume && json.root.boundingVolume.box;
     pivot = (Array.isArray(box) && box.length >= 3) ? [box[0], box[1], box[2]] : [0, 0, 0];
+    bvBox = (Array.isArray(box) && box.length === 12) ? box : null;
     if (tileset) { viewer.scene.primitives.remove(tileset); tileset = null; }
     tileset = await Cesium.Cesium3DTileset.fromUrl(base + 'tileset.json');
     viewer.scene.primitives.add(tileset);
@@ -814,6 +878,8 @@
     viewer.scene.camera.flyToBoundingSphere(tileset.boundingSphere, { duration: 1.2 });
     $('#pv-refresh').disabled = false;
     $('#pv-save').disabled = false;
+    $('#pv-reset').disabled = false;
+    $('#pv-snap').disabled = false;
     return true;
   }
 
@@ -870,6 +936,59 @@
     pvStatus('变换已重置（未保存到磁盘）', '');
   }
 
+  // ===== 模型高程范围（相对椭球面，即无 DEM 时的"地面"=0）=====
+
+  function modelHeightRange() {
+    if (!tileset || !tileset.root) return null;
+    const M = Cesium.Matrix4.multiply(tileset.modelMatrix, tileset.root.transform,
+      new Cesium.Matrix4());
+    const hs = [];
+    if (bvBox) {
+      const c = [bvBox[0], bvBox[1], bvBox[2]];
+      const ax = [bvBox[3], bvBox[4], bvBox[5]];
+      const ay = [bvBox[6], bvBox[7], bvBox[8]];
+      const az = [bvBox[9], bvBox[10], bvBox[11]];
+      for (const i of [-1, 1]) for (const j of [-1, 1]) for (const k of [-1, 1]) {
+        const p = new Cesium.Cartesian3(
+          c[0] + i * ax[0] + j * ay[0] + k * az[0],
+          c[1] + i * ax[1] + j * ay[1] + k * az[1],
+          c[2] + i * ax[2] + j * ay[2] + k * az[2]);
+        const w = Cesium.Matrix4.multiplyByPoint(M, p, new Cesium.Cartesian3());
+        hs.push(Cesium.Cartographic.fromCartesian(w).height);
+      }
+    } else if (tileset.boundingSphere) {
+      const cc = Cesium.Cartographic.fromCartesian(tileset.boundingSphere.center);
+      hs.push(cc.height - tileset.boundingSphere.radius);
+      hs.push(cc.height + tileset.boundingSphere.radius);
+    }
+    if (!hs.length) return null;
+    return { min: Math.min(...hs), max: Math.max(...hs) };
+  }
+
+  function updateElev() {
+    const el = $('#pv-elev');
+    if (!el) return;
+    if (!tileset) { el.textContent = '打开预览后显示'; return; }
+    const r = modelHeightRange();
+    if (!r) { el.textContent = '—'; return; }
+    const fmt = (v) => (v >= 0 ? '+' : '') + v.toFixed(1);
+    let tag = '';
+    if (r.min > 1) tag = ' <span style="color:#e06a6a">悬空 ' + fmt(r.min) + ' m</span>';
+    else if (r.min < -1) tag = ' <span style="color:#e0a55d">低于地面 ' + fmt(-r.min) + ' m</span>';
+    el.innerHTML = '底部 ' + fmt(r.min) + ' · 顶部 ' + fmt(r.max) + ' m' + tag;
+  }
+
+  function snapToGround() {
+    if (!tileset) return;
+    const r = modelHeightRange();
+    if (!r) return;
+    const dz = -r.min;
+    if (Math.abs(dz) < 0.01) { pvStatus('模型已贴地，无需调整', ''); return; }
+    t = { ...t, z: (t.z || 0) + dz };
+    applyTransform();
+    pvStatus('已贴地：模型最低点对齐到地面（Z 平移 ' + (t.z >= 0 ? '+' : '') + t.z.toFixed(2) + ' 米），记得保存烘焙', 'ok');
+  }
+
   function bindInputs() {
     for (const k of ['x', 'y', 'z', 'heading', 'pitch', 'roll', 'sx', 'sy', 'sz']) {
       const el = $('#pv-' + k);
@@ -905,6 +1024,7 @@
     $('#pv-refresh').addEventListener('click', refreshPreview);
     $('#pv-save').addEventListener('click', saveBake);
     $('#pv-reset').addEventListener('click', resetTransform);
+    $('#pv-snap').addEventListener('click', snapToGround);
     const showEl = $('#pv-show');
     if (showEl) showEl.addEventListener('change', () => { if (gizmo) gizmo.setShow(showEl.checked); });
     bindInputs();

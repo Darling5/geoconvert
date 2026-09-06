@@ -305,6 +305,10 @@ footer#bar b{color:var(--txt)}
         <input type="range" id="pv-opacity" min="10" max="100" step="5" value="100">
         <span id="pv-opacity-val" style="color:var(--mut);font:12.5px Consolas,monospace;min-width:40px">100%</span>
       </div>
+      <div class="pv-pg"><b>模型高程</b>
+        <span id="pv-elev" style="color:var(--mut);font:12.5px Consolas,monospace">打开预览后显示</span>
+        <button id="pv-snap" disabled title="把模型最低点对齐到地面（椭球高 0），自动修正悬空/入地">贴地</button>
+      </div>
     </div>
     <div id="pv-viewer"></div>
     <div class="hint">保存 = 把当前调整烘焙进 tileset.json 的 root.transform（原文件备份为 tileset.json.bak），烘焙后再注册到系统即为最终位置；
