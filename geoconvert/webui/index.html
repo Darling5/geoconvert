@@ -427,6 +427,8 @@ footer#bar b{color:var(--txt)}
       <canvas id="li-cap-cv" width="112" height="38" title="看不清？点击换一张"></canvas>
     </div>
     <div id="li-extra" class="hidden">
+      <label>邀请码（选填，有码免审核立即使用）</label>
+      <input id="li-invite" placeholder="如 GEO-XXXXXXXX（没有可留空）" autocomplete="off">
       <label>联系电话（选填，便于商务对接）</label>
       <input id="li-phone" placeholder="手机号 / 微信号">
       <label>邮箱（选填）</label>
@@ -824,11 +826,14 @@ $('#start').addEventListener('click', async () => {
   try { r = await fetch('/api/start', {method:'POST', body: JSON.stringify(body)}); }
   catch(e){ alert('无法连接服务：' + e); return; }
   const j = await r.json().catch(() => ({}));
-  if (r.status === 402){
-    // 门禁：未登录 / 次数不足 / 授权服务器不可达
+  if (r.status === 402 || r.status === 403){
+    // 门禁：未登录 / 次数不足 / 审核中 / 授权服务器不可达
     if (j.code === 'login_required') openLicModal('login');
     else if (j.code === 'offline' || j.code === 'server_error')
       alert(j.error || '无法连接授权服务器，请检查网络后重试');
+    else if (j.code === 'pending_review' || j.code === 'rejected'
+             || j.code === 'device_blocked' || j.code === 'device_limit')
+      alert(j.error || '账号状态异常，请联系商务');
     else openLeadDialog(j.code);
     refreshLic();
     return;
@@ -1063,8 +1068,12 @@ function renderLic(){
   let cls = '';
   if (LIC.quota && (LIC.quota.code !== 'ok')) cls = (ml <= 0 || yl <= 0 || q.expired) ? ' bad' : ' warn';
   const offline = LIC.online ? '' : '<span style="color:#ffd04d;font-size:12px" title="无法连接授权服务器">⚠ 离线</span> ';
+  const pending = LIC.status === 'pending'
+    ? '<span class="lic-quota warn" title="注册后最长 24 小时自动通过审核，通过后即可转换" style="cursor:help">⏳ 审核中</span>'
+    : '';
   box.innerHTML = offline +
     '<span class="lic-user"><b title="' + esc(LIC.username) + '">' + esc(LIC.username) + '</b>' +
+    pending +
     '<span class="lic-quota' + cls + '" id="lic-quota" title="点击刷新 · 月度 / 年度剩余转换次数" style="cursor:pointer">本月 <em>' + ml + '</em> · 年度 <em>' + yl + '</em></span>' +
     '<button class="lic-logout" title="退出登录">退出</button></span>';
   box.querySelector('#lic-quota').addEventListener('click', refreshLic);
@@ -1246,6 +1255,7 @@ function openLicModal(mode, presetErr){
   $('#li-err').textContent = presetErr || '';
   $('#li-pass').value = '';
   $('#li-pass2').value = '';
+  $('#li-invite').value = '';
   $('#li-cap').value = '';
   drawCaptcha();
   syncLicTabs();
@@ -1286,6 +1296,7 @@ async function doLicAuth(){
     if (licMode === 'reg'){
       r = await fetch('/api/license/register', {method:'POST', body: JSON.stringify({
         username: user, password: pass,
+        invite_code: $('#li-invite').value.trim(),
         phone: $('#li-phone').value.trim(), email: $('#li-email').value.trim(),
         company: $('#li-company').value.trim()})});
     } else {
@@ -1295,6 +1306,9 @@ async function doLicAuth(){
     const j = await r.json();
     if (r.ok && j.ok){
       $('#lic-modal').classList.add('hidden');
+      if (licMode === 'reg' && j.status === 'pending'){
+        alert('注册成功！\n\n您的账号正在审核中（最长 24 小时，一般很快通过），审核通过后即可使用转换功能。\n如有邀请码，可在下次注册时填写，立即免审核使用。');
+      }
       await refreshLic();
     } else {
       $('#li-err').textContent = j.error || '操作失败，请稍后重试';

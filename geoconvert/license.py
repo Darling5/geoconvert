@@ -153,7 +153,7 @@ def status():
     if s != 200:
         return _offline({'error': j.get('error') or '服务器异常'})
     return {'logged_in': True, 'online': True, 'username': j.get('username') or '',
-            'quota': j.get('quota')}
+            'status': j.get('status') or 'ok', 'quota': j.get('quota')}
 
 
 def login(username, password):
@@ -173,10 +173,11 @@ def login(username, password):
             'code': j.get('code') or ''}
 
 
-def register(username, password, phone='', email='', company=''):
+def register(username, password, phone='', email='', company='', invite_code=''):
     s, j = _http('/api/register', 'POST',
                  {'username': username, 'password': password, 'phone': phone,
                   'email': email, 'company': company,
+                  'invite_code': (invite_code or '').strip(),
                   'device_id': _load().get('device_id')}, auth=False)
     if s == 200 and j.get('token'):
         d = _load()
@@ -184,10 +185,12 @@ def register(username, password, phone='', email='', company=''):
         d['token'] = j['token']
         d['expires'] = j.get('expires') or 0
         _save(d)
-        return {'ok': True, 'quota': j.get('quota')}
+        return {'ok': True, 'quota': j.get('quota'),
+                'status': j.get('status') or 'ok'}
     if s == 0:
         return {'ok': False, 'error': '无法连接授权服务器，请检查网络'}
-    return {'ok': False, 'error': j.get('error') or '注册失败（%s）' % s}
+    return {'ok': False, 'error': j.get('error') or '注册失败（%s）' % s,
+            'code': j.get('code') or ''}
 
 
 def logout():
@@ -215,9 +218,31 @@ def deduct(fmt, note=''):
         return {'ok': False, 'code': 'login_required', 'error': '请先登录'}
     if s == 402:
         e = j.get('error') or {}
-        return {'ok': False, 'code': e.get('code') or 'quota', 'error': '转换次数不足',
-                'quota': e.get('quota')}
+        code = e.get('code') or 'quota'
+        msg = _CODE_MSG.get(code, '转换次数不足')
+        return {'ok': False, 'code': code, 'error': msg, 'quota': e.get('quota')}
+    if s == 403:
+        e = j.get('error') or {}
+        if isinstance(e, dict):
+            return {'ok': False, 'code': e.get('code') or 'rejected',
+                    'error': _CODE_MSG.get(e.get('code') or '', '账号状态异常'),
+                    'quota': e.get('quota')}
+        return {'ok': False, 'code': j.get('code') or 'rejected',
+                'error': j.get('error') or '账号状态异常'}
     return {'ok': False, 'code': 'server_error', 'error': j.get('error') or '服务器异常'}
+
+
+_CODE_MSG = {
+    'pending_review': '账号审核中（注册后最长 24 小时自动通过），审核通过后即可转换',
+    'rejected': '该账号未通过审核，如有疑问请联系商务',
+    'monthly_exhausted': '本月免费次数已用完，下月自动重置（可提交需求申请增加次数）',
+    'yearly_exhausted': '年度免费次数已用完（可提交需求申请增加次数）',
+    'expired': '账号有效期已过，请联系商务续期',
+    'device_limit': '该账号绑定的设备数已达上限（如需更换设备请联系商务）',
+    'device_blocked': '该设备已被限制使用，如有疑问请联系商务',
+    'device_register_limit': '该设备注册的账号数已达上限，请联系商务',
+    'bad_invite': '邀请码无效或已被使用',
+}
 
 
 def refund(tx_id):

@@ -25,7 +25,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 from .params import build_argv, detect_format, validate
 from . import license as lic
 
-APP_VERSION = '1.5.2'
+APP_VERSION = '1.5.3'
 GITEE_API = 'https://gitee.com/api/v5/repos/darling5/geoconvert/releases/latest'
 GITEE_URL = 'https://gitee.com/darling5/geoconvert/releases/latest'
 RELEASES_API = 'https://api.github.com/repos/Darling5/geoconvert/releases/latest'
@@ -597,7 +597,8 @@ class Handler(BaseHTTPRequestHandler):
                              str(body.get('password') or ''),
                              phone=str(body.get('phone') or '').strip(),
                              email=str(body.get('email') or '').strip(),
-                             company=str(body.get('company') or '').strip())
+                             company=str(body.get('company') or '').strip(),
+                             invite_code=str(body.get('invite_code') or '').strip())
             self._send(200 if r.get('ok') else 400, r)
         elif u.path == '/api/license/logout':
             self._send(200, lic.logout())
