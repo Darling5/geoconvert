@@ -41,16 +41,49 @@ def black_to_transparent(im, threshold):
     return im
 
 
+def _black_fill_transparent(im):
+    """a==0 像素的 RGB 填黑（jpeg 黑角、png 透明区 RGB 干净），原地修改。
+
+    Pillow ≥9.1 对 RGBA 缩放内部已预乘，半透明边缘色无背景渗色，无需修正。
+    """
+    a = im.getchannel('A')
+    inv = a.point(lambda v: 255 if v == 0 else 0)
+    im.paste((0, 0, 0, 0), mask=inv)
+    return im
+
+
 def load_texture(tif_path, tex_max, threshold, fmt):
-    """TIF → RGB → 降采样到 tex_max →（png）黑边转透明，返回 PIL Image。"""
-    im = Image.open(tif_path)
-    if im.mode != 'RGB':
-        im = im.convert('RGB')
-    w, h = im.size
+    """TIF → RGB/RGBA → 降采样到 tex_max →（png）边缘转透明，返回 PIL Image。
+
+    自带 alpha 的 TIF（DJI Terra / Pix4D 等 DOM 导出，无数据区是纯白 RGB +
+    alpha=0）直接沿用其 alpha 通道——旧代码 convert('RGB') 丢 alpha，白底
+    变实心白边。无 alpha 的 TIF 维持旧的近黑边缘转透明。
+    """
+    src = Image.open(tif_path)
+    use_alpha = False
+    if src.mode in ('RGBA', 'LA', 'PA') or (src.mode == 'P' and 'transparency' in src.info):
+        if src.mode != 'RGBA':
+            src = src.convert('RGBA')
+        if src.histogram()[768] > 0:  # 存在全透明像素：TIF 自带边缘透明
+            use_alpha = True
+    if not use_alpha:
+        if src.mode != 'RGB':
+            src = src.convert('RGB')
+    w, h = src.size
     scale = tex_max / max(w, h)
     if scale < 1:
-        im = im.resize((max(1, round(w * scale)), max(1, round(h * scale))),
-                       Image.LANCZOS)
+        im = src.resize((max(1, round(w * scale)), max(1, round(h * scale))),
+                        Image.LANCZOS)
+        src = None  # 释放整幅解码缓冲（超大图）
+    else:
+        im = src
+    if use_alpha:
+        im = _black_fill_transparent(im)
+        if fmt == 'png':
+            return im
+        return im.convert('RGB')  # jpeg：透明区已填黑，黑角保留
+    if im.mode != 'RGB':
+        im = im.convert('RGB')
     if fmt == 'png':
         im = black_to_transparent(im, threshold)
     return im
@@ -226,7 +259,7 @@ def main(argv=None):
     ap.add_argument('--threshold', type=int, default=BLACK_THRESHOLD,
                     help='黑边判定阈值')
     ap.add_argument('--format', choices=['png', 'jpeg'], default='png',
-                    help='png=黑边透明（默认），jpeg=更小但黑角保留')
+                    help='png=边缘透明（默认，alpha 或近黑边），jpeg=更小但黑角保留')
     ap.add_argument('--backend', help='后端地址：从 /files/dom-imagery.json 读参数'
                     '（center/rotation/width/height 未显式给出时生效）')
     ap.add_argument('--tiles-version', choices=['1.0', '1.1'], default='1.0',
