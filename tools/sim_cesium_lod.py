@@ -22,9 +22,14 @@ def sphere_of(n):
     return (cx, cy, cz), r
 
 
-def simulate(root, dist, screen_h=1000.0):
-    """相机在模型正上方 dist 米处；返回被选中渲染的瓦片列表。"""
-    if root['geometricError'] * screen_h / dist <= MAX_SSE:
+def simulate(root, dist, screen_h=1000.0, tileset_ge=None):
+    """相机在模型正上方 dist 米处；返回被选中渲染的瓦片列表。
+
+    selectTiles 早退条件是 tileset 顶层 GE 的 SSE（root.getScreenSpaceError
+    传 isTileset=true 时取 tileset._scaledGeometricError，非 root 自身 GE）。
+    """
+    ge0 = tileset_ge if tileset_ge is not None else root['geometricError']
+    if ge0 * screen_h / dist <= MAX_SSE:
         return []  # selectTiles 早退：整个 tileset 不渲染
 
     selected = []
@@ -61,15 +66,23 @@ def stats(path):
     print('== %s ==' % path)
     print('根 GE: %.1f  根有 content: %s  子数: %d'
           % (root['geometricError'], 'content' in root, len(root.get('children', []))))
+    depth = {}
+
+    def walk_depth(n, d):
+        depth[id(n)] = d
+        for c in n.get('children', []):
+            walk_depth(c, d + 1)
+    walk_depth(root, 0)
     for dist in (200, 1000, 3000, 9000, 10800, 20000, 100000, 500000,
                  5000000, 20000000, 31900000):
-        sel = simulate(root, float(dist))
-        top = [s['content']['uri'].split('/')[0] for s in sel
-               if 'content' in s]
-        uniq = sorted(set(top))
-        print('距离 %9d m: 选中 %4d 瓦片, 顶层块 %d/%d %s'
-              % (dist, len(sel), len(uniq), len(root.get('children', [])),
-                 '' if len(uniq) == len(root.get('children', [])) else '<- 有块缺失!'))
+        sel = simulate(root, float(dist), tileset_ge=ts.get('geometricError'))
+        by_level = {}
+        for s in sel:
+            if 'content' in s:
+                k = depth.get(id(s), 0)
+                by_level[k] = by_level.get(k, 0) + 1
+        print('距离 %9d m: 选中 %4d 瓦片（按层级根=0: %s）'
+              % (dist, len(sel), dict(sorted(by_level.items()))))
     # REPLACE 父级的子级应全部有 content（流式加载时粗模兜底的前提）
     bad = []
     def walk(n):

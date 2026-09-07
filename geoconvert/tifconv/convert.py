@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
-"""TIF 正射影像 → 贴图 3D 平面（3D Tiles b3dm，大纹理网格切块）。
+"""TIF 正射影像 → 贴图 3D 平面（3D Tiles b3dm，三级 LOD 金字塔）。
 
 把影像贴到对应地面尺寸的 3D 平面（unlit 材质、黑边转透明），
 复用应用内 3D 模型调整控件（XYZ 轴/旋转/斜移/缩放/透明度/保存）。
 
-切块策略：纹理任一边超过 --cell-max（默认 2048px）时按网格切块——
-根节点为整幅低清总览（1024px，REPLACE 细化），子块为各网格的高清贴图平面。
-远视角只加载总览，拉近后按视野加载所在格网块，避免单张大纹理一次性下载/解码。
+LOD 金字塔（纹理任一边超过 --cell-max 默认 2048px 时启用）：
+  L0 总览   整幅 ≤1024px（root content，REPLACE 细化）
+  L1 中清   每块覆盖 2×2 个 L2 块，纹理 ≤1024px（REPLACE 细化）
+  L2 高清   原分辨率上限 tex_max（默认 16384px），网格块 ≤cell_max
+远视角只加载总览，中距离换中清块，拉近后按视野加载所在高清块；
+L2 网格 ≤2×2 时 L1 与总览同级，自动退化为两级；单块时为单平面。
 
 与 www/tif_to_plane.py 语义一致：rotation 北偏东顺时针为正，
 widthMeters 为影像对应的地面宽度（米），高度默认抬 1 米防深度冲突。
@@ -52,12 +55,11 @@ def _black_fill_transparent(im):
     return im
 
 
-def load_texture(tif_path, tex_max, threshold, fmt):
-    """TIF → RGB/RGBA → 降采样到 tex_max →（png）边缘转透明，返回 PIL Image。
+def open_base(tif_path):
+    """TIF → 全分辨率 RGBA/RGB（不降采样）。返回 (im, use_alpha)。
 
     自带 alpha 的 TIF（DJI Terra / Pix4D 等 DOM 导出，无数据区是纯白 RGB +
-    alpha=0）直接沿用其 alpha 通道——旧代码 convert('RGB') 丢 alpha，白底
-    变实心白边。无 alpha 的 TIF 维持旧的近黑边缘转透明。
+    alpha=0）沿用其 alpha 通道——丢 alpha 透明底会变实心白边。
     """
     src = Image.open(tif_path)
     use_alpha = False
@@ -66,17 +68,13 @@ def load_texture(tif_path, tex_max, threshold, fmt):
             src = src.convert('RGBA')
         if src.histogram()[768] > 0:  # 存在全透明像素：TIF 自带边缘透明
             use_alpha = True
-    if not use_alpha:
-        if src.mode != 'RGB':
-            src = src.convert('RGB')
-    w, h = src.size
-    scale = tex_max / max(w, h)
-    if scale < 1:
-        im = src.resize((max(1, round(w * scale)), max(1, round(h * scale))),
-                        Image.LANCZOS)
-        src = None  # 释放整幅解码缓冲（超大图）
-    else:
-        im = src
+    if not use_alpha and src.mode != 'RGB':
+        src = src.convert('RGB')
+    return src, use_alpha
+
+
+def finish_level(im, use_alpha, threshold, fmt):
+    """单级纹理收尾：透明区填黑 / 近黑边缘转透明。返回编码用 Image。"""
     if use_alpha:
         im = _black_fill_transparent(im)
         if fmt == 'png':
@@ -87,6 +85,17 @@ def load_texture(tif_path, tex_max, threshold, fmt):
     if fmt == 'png':
         im = black_to_transparent(im, threshold)
     return im
+
+
+def load_texture(tif_path, tex_max, threshold, fmt):
+    """TIF → 降采样到 tex_max →（png）边缘转透明，返回 PIL Image（单级旧接口）。"""
+    im, use_alpha = open_base(tif_path)
+    w, h = im.size
+    scale = tex_max / max(w, h)
+    if scale < 1:
+        im = im.resize((max(1, round(w * scale)), max(1, round(h * scale))),
+                       Image.LANCZOS)
+    return finish_level(im, use_alpha, threshold, fmt)
 
 
 def encode_image(im, fmt):
@@ -125,6 +134,12 @@ def build_cell_b3dm(x0, x1, y0, y1, tex_bytes, tiles11=False):
     return glb if tiles11 else to_b3dm(glb)
 
 
+def _box_edges(box):
+    """box（中心 + 半边长）→ (x0, x1, y0, y1)。"""
+    return (box[0] - box[3], box[0] + box[3],
+            box[1] - box[7], box[1] + box[7])
+
+
 def fetch_backend_params(backend, timeout=8):
     """从后端 /files/dom-imagery.json 读已保存的配准参数（DomImagery 页面）。"""
     url = backend.rstrip('/') + '/files/dom-imagery.json'
@@ -133,15 +148,15 @@ def fetch_backend_params(backend, timeout=8):
 
 
 def convert_tif_plane(tif_path, out_dir, center_lon, center_lat, rotation=0.0,
-                      width_meters=3000.0, height=0.0, tex_max=4096,
+                      width_meters=3000.0, height=0.0, tex_max=16384,
                       threshold=BLACK_THRESHOLD, fmt='png', cell_max=2048,
                       verbose=True, tiles11=False):
     t0 = time.time()
     if height <= 0:
         height = 1.0  # 与地面（椭球高 0）完全共面会深度冲突
-    im = load_texture(tif_path, tex_max, threshold, fmt)
-    img_w, img_h = im.size
-    h_m = width_meters * img_h / img_w
+    base, use_alpha = open_base(tif_path)
+    bw, bh = base.size
+    h_m = width_meters * bh / bw
     hw, hh = width_meters / 2.0, h_m / 2.0
     os.makedirs(out_dir, exist_ok=True)
     # 1.1：glb 内容为标准 Y-up，不带 1.0 前私有的 gltfUpAxis
@@ -153,13 +168,45 @@ def convert_tif_plane(tif_path, out_dir, center_lon, center_lat, rotation=0.0,
     zhalf = max(1.0, width_meters * 0.0002)
     whole_box = [0, 0, 0, hw, 0, 0, 0, hh, 0, 0, 0, zhalf]
 
-    nx = max(1, math.ceil(img_w / cell_max))
-    ny = max(1, math.ceil(img_h / cell_max))
+    # L2 高清级：原分辨率上限 tex_max；边缘透明处理在本级做一次，
+    # L1/L0 从处理后的 L2 取材（RGBA 缩放内部预乘，各级边缘一致）
+    scale = tex_max / max(bw, bh)
+    if scale < 1:
+        l2 = base.resize((max(1, round(bw * scale)), max(1, round(bh * scale))),
+                         Image.LANCZOS)
+        base = None  # 释放整幅解码缓冲（超大图）
+    else:
+        l2 = base
+        base = None
+    l2 = finish_level(l2, use_alpha, threshold, fmt)
+    l2w, l2h = l2.size
+
+    # 整数网格边界（相邻块共享边界像素行/列，块间无缝）
+    nx = max(1, math.ceil(l2w / cell_max))
+    ny = max(1, math.ceil(l2h / cell_max))
+    xs = [round(i * l2w / nx) for i in range(nx + 1)]
+    ys = [round(j * l2h / ny) for j in range(ny + 1)]
     n_files = 0
     total_bytes = 0
 
+    def uv_box(u0, v0, u1, v1):
+        """图像像素区 → ENU box（图像左上=西北，x 向东 y 向北）。"""
+        x0 = -hw + u0 / l2w * width_meters
+        x1 = -hw + u1 / l2w * width_meters
+        y1 = hh - v0 / l2h * h_m
+        y0 = hh - v1 / l2h * h_m
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        return [cx, cy, 0, (x1 - x0) / 2, 0, 0, 0, (y1 - y0) / 2, 0, 0, 0, zhalf]
+
+    def emit(name, u0, v0, u1, v1, box):
+        data = build_cell_b3dm(*_box_edges(box), encode_image(
+            l2.crop((u0, v0, u1, v1)), fmt), tiles11)
+        with open(os.path.join(out_dir, name), 'wb') as f:
+            f.write(data)
+        return len(data)
+
     if nx == 1 and ny == 1:
-        tex = encode_image(im, fmt)
+        tex = encode_image(l2, fmt)
         data = build_plane_b3dm(width_meters, h_m, tex, tiles11)
         with open(os.path.join(out_dir, 'plane.' + ext), 'wb') as f:
             f.write(data)
@@ -176,44 +223,72 @@ def convert_tif_plane(tif_path, out_dir, center_lon, center_lat, rotation=0.0,
         n_files, total_bytes = 1, len(data)
         if verbose:
             print('纹理 %dx%d（%s）单平面 %.1f MB，%.1fs' %
-                  (img_w, img_h, fmt, len(data) / 1048576, time.time() - t0))
+                  (l2w, l2h, fmt, len(data) / 1048576, time.time() - t0))
     else:
-        # 根节点：整幅低清总览；子块：网格高清贴图（REPLACE 细化）
-        ov_w = min(1024, img_w)
-        ov_h = max(1, round(img_h * ov_w / img_w))
-        ov = im.resize((ov_w, ov_h), Image.LANCZOS)
+        # L0 总览：整幅 ≤1024px
+        ov_w = min(1024, l2w)
+        ov_h = max(1, round(l2h * ov_w / l2w))
+        ov = l2.resize((ov_w, ov_h), Image.LANCZOS)
         data = build_plane_b3dm(width_meters, h_m, encode_image(ov, fmt), tiles11)
         with open(os.path.join(out_dir, 'overview.' + ext), 'wb') as f:
             f.write(data)
         n_files, total_bytes = 1, len(data)
+        del ov
 
-        cw, ch = width_meters / nx, h_m / ny
-        px_w, px_h = img_w / nx, img_h / ny
-        children = []
-        for j in range(ny):  # 行：图像自上而下 = 北 → 南
-            y1 = hh - j * ch
-            y0 = hh - (j + 1) * ch
-            for i in range(nx):  # 列：图像自左向右 = 西 → 东
-                x0 = -hw + i * cw
-                x1 = -hw + (i + 1) * cw
-                cell = im.crop((round(i * px_w), round(j * px_h),
-                                round((i + 1) * px_w), round((j + 1) * px_h)))
-                data = build_cell_b3dm(x0, x1, y0, y1, encode_image(cell, fmt),
-                                       tiles11)
+        # L2 高清网格块（叶子，GE=0）
+        l2_tiles = {}
+        for j in range(ny):
+            for i in range(nx):
                 uri = 'cell_r%02dc%02d.%s' % (j, i, ext)
-                with open(os.path.join(out_dir, uri), 'wb') as f:
-                    f.write(data)
+                total_bytes += emit(uri, xs[i], ys[j], xs[i + 1], ys[j + 1],
+                                    uv_box(xs[i], ys[j], xs[i + 1], ys[j + 1]))
                 n_files += 1
-                total_bytes += len(data)
-                cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-                children.append({
-                    'boundingVolume': {'box': [cx, cy, 0, cw / 2, 0, 0,
-                                               0, ch / 2, 0, 0, 0, zhalf]},
+                l2_tiles[(j, i)] = {
+                    'boundingVolume': {'box': uv_box(
+                        xs[i], ys[j], xs[i + 1], ys[j + 1])},
                     'geometricError': 0,
                     'content': {'uri': uri},
-                })
-        # SSE=16 下细化距离≈GE×58m；总览在 ~radius 米外即可被格网替换
-        ge_root = max(32, round(radius * 0.02))
+                }
+
+        # L1 中清级：每块覆盖 2×2 个 L2 块，纹理 ≤1024px；
+        # L2 网格 ≤2×2 时 L1 与总览同级 → 退化为两级
+        mx, my = math.ceil(nx / 2), math.ceil(ny / 2)
+        # SSE=16 下细化距离≈GE×58m：中清→高清在 ~radius 内，总览→中清在 ~4.6×radius 外
+        ge_mid = max(16, radius * 0.02)
+        ge_root = max(32, radius * 0.02 if (mx == 1 and my == 1)
+                      else radius * 0.08)
+
+        if mx == 1 and my == 1:
+            children = [l2_tiles[(j, i)] for j in range(ny) for i in range(nx)]
+            ge_mid = None  # 无中清级
+        else:
+            children = []
+            for J in range(my):
+                for I in range(mx):
+                    i0, i1 = 2 * I, min(2 * I + 2, nx)
+                    j0, j1 = 2 * J, min(2 * J + 2, ny)
+                    u0, u1 = xs[i0], xs[i1]
+                    v0, v1 = ys[j0], ys[j1]
+                    uri = 'cellm_r%02dc%02d.%s' % (J, I, ext)
+                    cw = min(1024, u1 - u0)
+                    ch = max(1, round((v1 - v0) * cw / max(1, u1 - u0)))
+                    cell = l2.crop((u0, v0, u1, v1)).resize((cw, ch), Image.LANCZOS)
+                    data = build_cell_b3dm(*_box_edges(uv_box(u0, v0, u1, v1)),
+                                           encode_image(cell, fmt), tiles11)
+                    with open(os.path.join(out_dir, uri), 'wb') as f:
+                        f.write(data)
+                    n_files += 1
+                    total_bytes += len(data)
+                    box = uv_box(u0, v0, u1, v1)
+                    children.append({
+                        'boundingVolume': {'box': box},
+                        'refine': 'REPLACE',
+                        'geometricError': ge_mid,
+                        'content': {'uri': uri},
+                        'children': [l2_tiles[(j, i)]
+                                     for j in range(j0, j1) for i in range(i0, i1)],
+                    })
+
         tileset = {
             'asset': asset,
             'geometricError': max(100, math.ceil(radius * 2)),
@@ -227,9 +302,15 @@ def convert_tif_plane(tif_path, out_dir, center_lon, center_lat, rotation=0.0,
             },
         }
         if verbose:
-            print('纹理 %dx%d → 网格 %dx%d 块 + 总览，共 %d 文件 %.1f MB，%.1fs' %
-                  (img_w, img_h, nx, ny, n_files, total_bytes / 1048576,
-                   time.time() - t0))
+            if ge_mid is None:
+                print('纹理 %dx%d → 网格 %dx%d 块 + 总览（两级），共 %d 文件 %.1f MB，%.1fs' %
+                      (l2w, l2h, nx, ny, n_files, total_bytes / 1048576,
+                       time.time() - t0))
+            else:
+                print('纹理 %dx%d → 三级金字塔：总览 + 中清 %dx%d + 高清 %dx%d 块，'
+                      '共 %d 文件 %.1f MB，%.1fs' %
+                      (l2w, l2h, mx, my, nx, ny, n_files, total_bytes / 1048576,
+                       time.time() - t0))
 
     out = os.path.join(out_dir, 'tileset.json')
     with open(out, 'w', encoding='utf-8') as f:
@@ -253,7 +334,8 @@ def main(argv=None):
                     help='影像对应的地面宽度（米）')
     ap.add_argument('--height', type=float, default=None,
                     help='平面离地高度（米，≤0 自动抬升至 1 米）')
-    ap.add_argument('--tex-max', type=int, default=4096, help='纹理最大边像素')
+    ap.add_argument('--tex-max', type=int, default=16384,
+                    help='金字塔高清级整幅最大边像素（默认 16384，三级 LOD）')
     ap.add_argument('--cell-max', type=int, default=2048,
                     help='网格块纹理最大边像素，超过则切块（0=不切块）')
     ap.add_argument('--threshold', type=int, default=BLACK_THRESHOLD,

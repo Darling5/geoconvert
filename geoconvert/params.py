@@ -7,7 +7,7 @@ FORMATS = ('OBJ', 'OSGB', 'TIF')
 FMT_HINTS = {
     'OBJ': '多分块目录自动合并 · 超 25 万三角形空间切块 → 三级 LOD',
     'OSGB': 'Smart3D 倾斜摄影 → b3dm LOD 树',
-    'TIF': '正射影像 → 贴图 3D 平面（自动网格切块）',
+    'TIF': '正射影像 → 贴图 3D 平面（三级 LOD 金字塔）',
 }
 
 GEO_HINTS = {

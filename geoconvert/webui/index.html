@@ -221,7 +221,7 @@ footer#bar b{color:var(--txt)}
     <div class="fmt-row" id="fmts">
       <label class="fmt" data-fmt="OBJ"><input type="radio" name="fmt" value="OBJ"><b>OBJ</b><small>多分块合并 · 切块 → 三级 LOD</small></label>
       <label class="fmt" data-fmt="OSGB"><input type="radio" name="fmt" value="OSGB"><b>OSGB</b><small>Smart3D 倾斜摄影 → LOD 树</small></label>
-      <label class="fmt" data-fmt="TIF"><input type="radio" name="fmt" value="TIF"><b>TIF</b><small>正射影像 → 贴图平面</small></label>
+      <label class="fmt" data-fmt="TIF"><input type="radio" name="fmt" value="TIF"><b>TIF</b><small>正射影像 → 三级 LOD 平面</small></label>
     </div>
     <div class="row"><label>输入</label><input class="path" id="input" placeholder="浏览选择 OBJ 文件 / 多分块根目录（整文件夹）/ OSGB 数据目录 / TIF 影像"><button id="btn-in">浏览…</button><button class="openbtn" data-for="input" title="在资源管理器中打开该路径">打开</button></div>
     <div class="row"><label>输出</label><input class="path" id="output" placeholder="选择输出目录（生成 tileset.json + b3dm）"><button id="btn-out">浏览…</button><button class="openbtn" data-for="output" title="在资源管理器中打开该目录">打开</button></div>

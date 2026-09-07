@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """geoconvert Web 图形界面：本地 HTTP 服务（127.0.0.1）+ 系统默认浏览器。
 
 双击 exe（无参数）→ 起服务并自动打开浏览器操作页。
@@ -26,7 +26,7 @@ from urllib.parse import urlparse, parse_qs, unquote, quote, urljoin
 from .params import build_argv, detect_format, validate
 from . import license as lic
 
-APP_VERSION = '1.5.13'
+APP_VERSION = '1.5.14'
 GITEE_API = 'https://gitee.com/api/v5/repos/darling5/geoconvert/releases/latest'
 GITEE_URL = 'https://gitee.com/darling5/geoconvert/releases/latest'
 RELEASES_API = 'https://api.github.com/repos/Darling5/geoconvert/releases/latest'
