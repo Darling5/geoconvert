@@ -12,7 +12,7 @@ FMT_HINTS = {
 
 GEO_HINTS = {
     'OBJ': '留空经纬度 = 赤道 ENU，导入系统后用「调整位置」功能移动',
-    'OSGB': '留空 = 自动读取数据目录 metadata.xml 定位',
+    'OSGB': '留空 = 读 metadata.xml 自动定位；LOCAL/无地理参考 → 赤道 ENU，可填经纬度或导入后调整位置',
     'TIF': '中心 = 影像中心点 WGS-84 经纬度，地面宽度 = 影像覆盖的东西向真实米数',
 }
 

@@ -12,7 +12,8 @@
 定位方式（obj/osgb 通用）:
   --transform-from TILESET  复制参考 tileset.json 的 root.transform（与既有模型重合）
   --lat X --lon Y           ENU 原点经纬度
-  （都不给时 obj 默认赤道 ENU 经应用内模型调整定位；osgb 读 metadata.xml）
+  （都不给时 obj 默认赤道 ENU 经应用内模型调整定位；osgb 读 metadata.xml，
+   SRS=LOCAL 等无地理参考数据自动降级赤道 ENU，可填 --lat/--lon 定位）
 """
 import sys
 

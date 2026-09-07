@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """OSGB (OSG binary, Smart3D/ContextCapture 倾斜摄影) 解析器。
 
-依据 OSG 3.2/3.4 序列化规范实现，按 FileVersion 条件分支处理字段差异。
-Attributes 不含 0x4（无 binary brackets）时括号不占字节；本解析器仅支持
-未压缩（compressor == "0"）的文件。
+依据 OSG 3.2~3.6 序列化规范实现，按 FileVersion 条件分支处理字段差异。
+支持 attributes 含 0x4（binary brackets）的 OSG 3.6.x（v112+）文件：
+此时每个 `{` 括号后紧跟 i32 块大小（v>148 为 i64），块覆盖范围从 size
+字段自身起始位置算起；`}` 不占字节；对象读完可按块大小直接 seek 对齐。
+本解析器仅支持未压缩（compressor == "0"）的文件。
 """
 import struct
 
@@ -56,6 +58,38 @@ ID_DRAWARRAYLENGTH = 51
 ID_DRAWELEMENTS_UBYTE = 52
 ID_DRAWELEMENTS_USHORT = 53
 ID_DRAWELEMENTS_UINT = 54
+
+# v112+ 数组/图元集作为完整对象读取时的类名
+_ARRAY_OBJECT_TYPES = {
+    'osg::ByteArray': ('b', 1, 1), 'osg::UByteArray': ('B', 1, 1),
+    'osg::ShortArray': ('h', 2, 1), 'osg::UShortArray': ('H', 2, 1),
+    'osg::IntArray': ('i', 4, 1), 'osg::UIntArray': ('I', 4, 1),
+    'osg::FloatArray': ('f', 4, 1), 'osg::DoubleArray': ('d', 8, 1),
+    'osg::Vec2bArray': ('b', 1, 2), 'osg::Vec3bArray': ('b', 1, 3),
+    'osg::Vec4bArray': ('b', 1, 4),
+    'osg::Vec2ubArray': ('B', 1, 2), 'osg::Vec3ubArray': ('B', 1, 3),
+    'osg::Vec4ubArray': ('B', 1, 4),
+    'osg::Vec2sArray': ('h', 2, 2), 'osg::Vec3sArray': ('h', 2, 3),
+    'osg::Vec4sArray': ('h', 2, 4),
+    'osg::Vec2usArray': ('H', 2, 2), 'osg::Vec3usArray': ('H', 2, 3),
+    'osg::Vec4usArray': ('H', 2, 4),
+    'osg::Vec2iArray': ('i', 4, 2), 'osg::Vec3iArray': ('i', 4, 3),
+    'osg::Vec4iArray': ('i', 4, 4),
+    'osg::Vec2uiArray': ('I', 4, 2), 'osg::Vec3uiArray': ('I', 4, 3),
+    'osg::Vec4uiArray': ('I', 4, 4),
+    'osg::Vec2Array': ('f', 4, 2), 'osg::Vec3Array': ('f', 4, 3),
+    'osg::Vec4Array': ('f', 4, 4),
+    'osg::Vec2dArray': ('d', 8, 2), 'osg::Vec3dArray': ('d', 8, 3),
+    'osg::Vec4dArray': ('d', 8, 4),
+}
+
+_PRIMITIVE_OBJECT_TYPES = {
+    'osg::DrawArrays': ID_DRAWARRAYS,
+    'osg::DrawArrayLengths': ID_DRAWARRAYLENGTH,
+    'osg::DrawElementsUByte': ID_DRAWELEMENTS_UBYTE,
+    'osg::DrawElementsUShort': ID_DRAWELEMENTS_USHORT,
+    'osg::DrawElementsUInt': ID_DRAWELEMENTS_UINT,
+}
 
 
 class OsgError(Exception):
@@ -145,6 +179,9 @@ class _Reader:
         self.id_map = {}
         self.verbose = verbose
         self._log = []
+        self.brackets = False   # attributes & 0x4：括号后带块大小
+        self._begins = []       # 每个 `{` 的 size 字段起始位置
+        self._sizes = []        # 对应块大小
 
     def _take(self, n):
         if self.p + n > len(self.d):
@@ -174,6 +211,36 @@ class _Reader:
             raise OsgError('bad string len %d @%d' % (n, self.p - 4))
         return self._take(n).decode('utf-8', 'replace') if n else ''
 
+    # ---- binary brackets（OSG 3.6.x, attributes & 0x4）----
+    # `{` 后紧跟块大小（v>148 为 i64，否则 i32）；块范围 = [size 字段起
+    # 始位置, +size)；`}` 不占字节。非 brackets 文件中以下全部为空操作。
+
+    def begin_bracket(self):
+        if self.brackets:
+            self._begins.append(self.p)
+            if self.v > 148:
+                size = struct.unpack('<q', self._take(8))[0]
+            else:
+                size = self.i32()
+            self._sizes.append(size)
+
+    def end_bracket(self):
+        if self.brackets and self._begins:
+            self._begins.pop()
+            self._sizes.pop()
+
+    def advance_to_end(self):
+        """跳到当前块尾（readObject 每个对象读完后的对齐兜底）。"""
+        if self.brackets and self._begins:
+            self.p = self._begins[-1] + self._sizes[-1]
+            self._begins.pop()
+            self._sizes.pop()
+
+    def block_end(self):
+        if self.brackets and self._begins:
+            return self._begins[-1] + self._sizes[-1]
+        return None
+
     def log(self, msg):
         if self.verbose:
             self._log.append('@%06d %s' % (self.p, msg))
@@ -200,8 +267,7 @@ def read_osgb(data, verbose=False):
     _type = r.u32()          # 1 = scene, 2 = image, 3 = object
     r.v = r.i32()            # file version
     attributes = r.i32()
-    if attributes & 0x4:
-        raise OsgError('binary brackets (block size) not supported')
+    r.brackets = bool(attributes & 0x4)
     if attributes & 0x1:
         nd = r.i32()
         for _ in range(nd):
@@ -219,8 +285,11 @@ def _read_object(r):
     if cls == 'NULL':
         return None
     r.log('OBJ %s' % cls)
+    # OSG 3.6 readObject：className → `{`(+块大小) → UniqueID → 字段 → 块尾
+    r.begin_bracket()
     uid = r.u32()
     if uid and uid in r.id_map:
+        r.advance_to_end()
         return r.id_map[uid]
     if cls == 'osg::PagedLOD':
         obj = Node(cls)
@@ -238,12 +307,87 @@ def _read_object(r):
         obj = Texture()
     elif cls == 'osg::Material':
         obj = Node(cls)   # 只需跳过：材质不影响几何
+    elif cls in _ARRAY_OBJECT_TYPES:
+        obj = _read_array_body(r, cls)      # body 含全部字段
+        if uid:
+            r.id_map[uid] = obj
+        r.advance_to_end()
+        return obj
+    elif cls in _PRIMITIVE_OBJECT_TYPES:
+        obj = _read_primitive_body(r, cls)  # body 含全部字段
+        if uid:
+            r.id_map[uid] = obj
+        r.advance_to_end()
+        return obj
     else:
+        # 未知类（UserDataContainer 等）：brackets 模式按块大小整体跳过
+        if r.brackets:
+            r.log('SKIP %s' % cls)
+            r.advance_to_end()
+            return None
         raise OsgError('unknown class %r @%d' % (cls, r.p))
     if uid:
         r.id_map[uid] = obj
     _read_fields(r, cls, obj)
+    r.advance_to_end()
     return obj
+
+
+def _read_array_body(r, cls):
+    """v112+ 数组对象 body（className/括号/uid 已由 _read_object 读取）。
+    字段序：Object 头 → Binding(i32) → Normalize(u8) → Preserve(u8)
+    → 元素数(u32) → 数据。返回解包后的数组（Vec 系为元组列表）。"""
+    r.string()  # Name
+    r.i32()     # DataVariance
+    if r.v >= 77:
+        if r.u8():
+            _read_object(r)  # UserDataContainer
+    r.i32()  # Binding
+    r.u8()   # Normalize
+    r.u8()   # PreserveDataType
+    fmt, esz, per = _ARRAY_OBJECT_TYPES[cls]
+    n = r.u32()
+    total = n * esz * per
+    raw = r._take(total)
+    count = n * per
+    vals = list(struct.unpack('<%d%s' % (count, fmt), raw))
+    if per > 1:
+        arr = [tuple(vals[i:i + per]) for i in range(0, count, per)]
+    else:
+        arr = vals
+    r.log('array obj %s n=%d' % (cls, n))
+    return arr
+
+
+def _read_primitive_body(r, cls):
+    """v112+ 图元集对象 body。字段序：Object 头 → NumInstances(i32)
+    → Mode(i32) → 派生类数据。返回与旧 _read_primitive_set 同构的 dict。"""
+    r.string()  # Name
+    r.i32()     # DataVariance
+    if r.v >= 77:
+        if r.u8():
+            _read_object(r)  # UserDataContainer
+    r.i32()  # NumInstances
+    mode = r.i32()  # Mode
+    ps = {'type': _PRIMITIVE_OBJECT_TYPES[cls], 'mode': mode}
+    if cls == 'osg::DrawArrays':
+        ps['first'] = r.i32()
+        ps['count'] = r.u32()
+    elif cls == 'osg::DrawArrayLengths':
+        ps['first'] = r.i32()
+        n = r.i32()
+        ps['lengths'] = [r.i32() for _ in range(n)]
+    elif cls == 'osg::DrawElementsUByte':
+        n = r.i32()
+        ps['indices'] = list(r._take(n))
+    elif cls == 'osg::DrawElementsUShort':
+        n = r.i32()
+        ps['indices'] = list(struct.unpack('<%dH' % n, r._take(2 * n)))
+    elif cls == 'osg::DrawElementsUInt':
+        n = r.i32()
+        ps['indices'] = list(struct.unpack('<%dI' % n, r._take(4 * n)))
+    r.log('prim obj %s mode=%d n=%d' % (cls, mode, len(ps.get('indices', ()))))
+    return ps
 
 
 def _read_object_header(r, obj):
@@ -253,7 +397,7 @@ def _read_object_header(r, obj):
     r.i32()  # DataVariance
     if r.v >= 77:
         if r.u8():
-            raise OsgError('UserDataContainer not supported')
+            _read_object(r)  # UserDataContainer（未知类时自动跳过/抛错）
 
 
 def _read_fields(r, cls, obj):
@@ -271,34 +415,43 @@ def _read_fields(r, cls, obj):
             r.u32()  # FrameNumberOfLastTraversal
         r.u32()  # NumChildrenThatCannotBeExpired
         r.u8()   # DisableExternalChildrenPaging
-        # RangeDataList (user): 框架 bool + 文件名列表 + PriorityList
+        # RangeDataList (user): 框架 bool + 文件名列表 + PriorityList（各带括号）
         if r.u8():
             n = r.u32()
+            r.begin_bracket()
             for _ in range(n):
                 obj.file_names.append(r.string())
+            r.end_bracket()
             pn = r.u32()
+            r.begin_bracket()
             for _ in range(pn):
                 r.f32()
                 r.f32()
+            r.end_bracket()
             r.log('RangeDataList n=%d files=%r' % (n, obj.file_names[:3]))
-        # Children (user): 框架 bool + 子节点列表
+        # Children (user): 框架 bool + 子节点列表（size>0 才有括号）
         if r.u8():
             n = r.u32()
-            for _ in range(n):
-                c = _read_object(r)
-                if c is not None:
-                    obj.children.append(c)
+            if n > 0:
+                r.begin_bracket()
+                for _ in range(n):
+                    c = _read_object(r)
+                    if c is not None:
+                        obj.children.append(c)
+                r.end_bracket()
     elif cls == 'osg::Geode':
         # associates: osg::Object osg::Node osg::Geode（无 Group）
         _read_object_header(r, obj)
         _read_node_rest(r, obj)
-        # Drawables (user): 框架 bool + 数量 + 对象列表
+        # Drawables (user): 框架 bool + 数量 + 对象列表（带括号）
         if r.u8():
             n = r.u32()
+            r.begin_bracket()
             for _ in range(n):
                 d = _read_object(r)
                 if d is not None:
                     obj.drawables.append(d)
+            r.end_bracket()
             r.log('Drawables n=%d' % len(obj.drawables))
     elif cls == 'osg::Group':
         _read_object_header(r, obj)
@@ -310,8 +463,15 @@ def _read_fields(r, cls, obj):
         _read_group_children(r, obj)
         # Transform: referenceFrame enum
         r.i32()
-        # Matrix (matrix serializer): 16×f32
-        m = struct.unpack('<16f', r._take(64))
+        # Matrix (matrix serializer): `{` + 16 值 + `}`；OSG 3.6 统一写 f64，
+        # 旧版写 f32——brackets 模式下用块大小剩余字节数自适应
+        r.begin_bracket()
+        bend = r.block_end()
+        if bend is not None and bend - r.p == 128:
+            m = struct.unpack('<16d', r._take(128))
+        else:
+            m = struct.unpack('<16f', r._take(64))
+        r.end_bracket()
         obj.matrix = [list(m[0:4]), list(m[4:8]), list(m[8:12]), list(m[12:16])]
     elif cls == 'osg::Geometry':
         _read_geometry(r, obj)
@@ -327,7 +487,9 @@ def _read_fields(r, cls, obj):
 def _read_node_rest(r, obj):
     """Node 字段（Object 头之后）：InitialBound/callbacks/NodeMask/StateSet。"""
     if r.u8():
+        r.begin_bracket()
         obj.initial_bound = (r.f64(), r.f64(), r.f64(), r.f64())
+        r.end_bracket()
     for cb in ('ComputeBoundingSphereCallback', 'UpdateCallback',
                'EventCallback', 'CullCallback'):
         if r.u8():
@@ -344,13 +506,15 @@ def _read_node_rest(r, obj):
 
 
 def _read_group_children(r, obj):
-    """Group::Children (user serializer)。"""
+    """Group::Children (readChildren): 框架 bool + size + 无条件括号。"""
     if r.u8():
         n = r.u32()
+        r.begin_bracket()
         for _ in range(n):
             c = _read_object(r)
             if c is not None:
                 obj.children.append(c)
+        r.end_bracket()
 
 
 def _read_lod_fields(r, obj):
@@ -359,10 +523,12 @@ def _read_lod_fields(r, obj):
         obj.center = (r.f64(), r.f64(), r.f64())
         obj.radius = r.f64()
     obj.range_mode = r.i32()  # RangeMode
-    if r.u8():  # RangeList
+    if r.u8():  # RangeList (readRangeList): size + 括号 + n×(f32,f32)
         n = r.u32()
+        r.begin_bracket()
         for _ in range(n):
             obj.range_list.append((r.f32(), r.f32()))
+        r.end_bracket()
         r.log('RangeMode=%d RangeList=%r' % (obj.range_mode, obj.range_list[:4],))
 
 
@@ -388,56 +554,77 @@ def _read_material_skip(r, obj):
 
 def _read_stateset(r, ss):
     _read_object_header(r, ss)
-    # ModeList
+    # ModeList (readModes): 框架 bool + size + (size>0: 括号 + n×(key,value))
     if r.u8():
         n = r.u32()
-        for _ in range(n):
-            k = r.i32()
-            ss.modes[k] = r.i32()
+        if n > 0:
+            r.begin_bracket()
+            for _ in range(n):
+                k = r.i32()
+                ss.modes[k] = r.i32()
+            r.end_bracket()
         r.log('ModeList n=%d' % n)
     else:
         r.log('ModeList absent')
-    # AttributeList
+    # AttributeList (readAttributes): 框架 bool + size + (size>0: 括号 +
+    # n×(对象 + Value i32))
     if r.u8():
         n = r.u32()
-        for _ in range(n):
-            o = _read_object(r)
-            r.i32()  # Value
-            ss.attributes.append(o)
+        if n > 0:
+            r.begin_bracket()
+            for _ in range(n):
+                o = _read_object(r)
+                r.i32()  # Value
+                ss.attributes.append(o)
+            r.end_bracket()
         r.log('AttributeList n=%d' % n)
     else:
         r.log('AttributeList absent')
-    # TextureModeList: size + per-unit ModeList
+    # TextureModeList: 框架 bool + size + 括号 + 每单元 readModes + 括号尾
     if r.u8():
         n = r.u32()
+        r.begin_bracket()
         for _ in range(n):
             m = {}
             mn = r.u32()
-            for _ in range(mn):
-                k = r.i32()
-                m[k] = r.i32()
+            if mn > 0:
+                r.begin_bracket()
+                for _ in range(mn):
+                    k = r.i32()
+                    m[k] = r.i32()
+                r.end_bracket()
             ss.texture_modes.append(m)
+        r.end_bracket()
         r.log('TextureModeList n=%d' % n)
     else:
         r.log('TextureModeList absent')
-    # TextureAttributeList: size + per-unit AttributeList
+    # TextureAttributeList: 框架 bool + size + 括号 + 每单元 readAttributes +
+    # 括号尾
     if r.u8():
         n = r.u32()
+        r.begin_bracket()
         for _ in range(n):
             an = r.u32()
             lst = []
-            for _ in range(an):
-                o = _read_object(r)
-                r.i32()
-                lst.append(o)
+            if an > 0:
+                r.begin_bracket()
+                for _ in range(an):
+                    o = _read_object(r)
+                    r.i32()
+                    lst.append(o)
+                r.end_bracket()
             ss.texture_attributes.append(lst)
+        r.end_bracket()
         r.log('TextureAttributeList n=%d units' % n)
-    # UniformList (user): 框架 bool + size + [object + value i32]
+    # UniformList (readUniformList): 框架 bool + size + 括号 +
+    # n×(对象 + Value i32) + 括号尾
     if r.u8():
         n = r.u32()
+        r.begin_bracket()
         for _ in range(n):
             _read_object(r)
             r.i32()
+        r.end_bracket()
     r.i32()  # RenderingHint
     r.i32()  # RenderBinMode
     r.i32()  # BinNumber
@@ -486,7 +673,12 @@ def _read_texture(r, tex, cls):
     r.i32()  # ShadowCompareFunc
     r.i32()  # ShadowTextureMode
     r.f32()  # ShadowAmbient
-    # v>=95: ImageAttachment; v>=98: Swizzle; v>=155: Min/MaxLOD —— v80 无
+    if r.v >= 95:
+        r.u8()  # ImageAttachment (check 恒 false → 仅框架 bool)
+    if r.v >= 98:
+        if r.u8():  # Swizzle (check 恒 true → bool + 字符串)
+            r.string()
+    # v>=155: MinLOD/MaxLOD —— v131 无
     # [Texture2D] Image (image serializer: bool + ReadImage)
     if r.u8():
         tex.image = _read_image(r)
@@ -553,8 +745,15 @@ def _read_geometry(r, g):
     # [Drawable] v<154: associates 无 osg::Node → 直接 Drawable 字段
     if r.u8():  # StateSet
         g.state_set = _read_object(r)
-    if r.u8():  # InitialBound (OSG 3.2: BoundingBox = 2×Vec3d)
-        r._take(48)
+    if r.u8():  # InitialBound (BoundingBox)。brackets 模式块大小覆盖数据，
+        # 直接跳块尾（Vec3f/Vec3d 布局差异不影响）；旧文件 2×Vec3d=48 字节
+        r.begin_bracket()
+        bend = r.block_end()
+        if bend is not None:
+            r.p = bend
+        else:
+            r._take(48)
+        r.end_bracket()
     if r.u8():  # ComputeBoundingBoxCallback
         _read_object(r)
     if r.u8():  # Shape
@@ -570,33 +769,65 @@ def _read_geometry(r, g):
         _read_object(r)
     if r.u8():  # DrawCallback
         _read_object(r)
-    # [Geometry] v<112: PrimitiveSetList + VertexData 系列（每个 user 序列化器
-    # 都有框架 bool，readArray 内部还有 hasArray/hasIndices 两个 bool）
-    n = r.u32()
-    for _ in range(n):
-        g.primitives.append(_read_primitive_set(r))
-    if r.u8():  # VertexData 框架 bool
-        g.vertices = _read_array_data(r)
-    if r.u8():  # NormalData
-        g.normals = _read_array_data(r)
-    if r.u8():  # ColorData
-        _read_array_data(r)
-    if r.u8():  # SecondaryColorData
-        _read_array_data(r)
-    if r.u8():  # FogCoordData
-        _read_array_data(r)
-    # TexCoordData
-    if r.u8():
-        tn = r.u32()
-        for _ in range(tn):
-            g.texcoords.append(_read_array_data(r))
-    # VertexAttribData
-    if r.u8():
-        an = r.u32()
-        for _ in range(an):
+    if v >= 112:
+        # [Geometry] OSG 3.5.1+：数组/图元集均为完整对象
+        # PrimitiveSetList (VectorSerializer): size + 对象序列（无 bool/括号）
+        n = r.u32()
+        for _ in range(n):
+            ps = _read_object(r)
+            if ps is not None:
+                g.primitives.append(ps)
+        # Vertex/Normal/Color/SecondaryColor/FogCoord (ObjectSerializer):
+        # bool + 对象
+        if r.u8():
+            g.vertices = _read_object(r)
+        if r.u8():
+            g.normals = _read_object(r)
+        if r.u8():
+            _read_object(r)  # ColorArray
+        if r.u8():
+            _read_object(r)  # SecondaryColorArray
+        if r.u8():
+            _read_object(r)  # FogCoordArray
+        # TexCoordArrayList (VectorSerializer): size + 对象序列
+        n = r.u32()
+        for _ in range(n):
+            arr = _read_object(r)
+            if arr is not None:
+                g.texcoords.append(arr)
+        # VertexAttribArrayList (VectorSerializer)
+        n = r.u32()
+        for _ in range(n):
+            _read_object(r)
+        # v112 已移除 FastPathHint，无需读取
+    else:
+        # [Geometry] v<112: PrimitiveSetList + VertexData 系列（每个 user 序列化器
+        # 都有框架 bool，readArray 内部还有 hasArray/hasIndices 两个 bool）
+        n = r.u32()
+        for _ in range(n):
+            g.primitives.append(_read_primitive_set(r))
+        if r.u8():  # VertexData 框架 bool
+            g.vertices = _read_array_data(r)
+        if r.u8():  # NormalData
+            g.normals = _read_array_data(r)
+        if r.u8():  # ColorData
             _read_array_data(r)
-    # FastPathHint (user): check 恒 false → 二进制只写框架 bool 0
-    r.u8()
+        if r.u8():  # SecondaryColorData
+            _read_array_data(r)
+        if r.u8():  # FogCoordData
+            _read_array_data(r)
+        # TexCoordData
+        if r.u8():
+            tn = r.u32()
+            for _ in range(tn):
+                g.texcoords.append(_read_array_data(r))
+        # VertexAttribData
+        if r.u8():
+            an = r.u32()
+            for _ in range(an):
+                _read_array_data(r)
+        # FastPathHint (user): check 恒 false → 二进制只写框架 bool 0
+        r.u8()
     r.log('Geometry done: verts=%d prims=%d tex=%d @%d/%d' % (
         len(g.vertices or ()), len(g.primitives), len(g.texcoords),
         r.p, len(r.d)))

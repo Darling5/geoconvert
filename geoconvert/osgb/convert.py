@@ -466,7 +466,7 @@ def _collect_geoms(nodes, matrix, out):
 
 class OsgbToTiles:
     def __init__(self, out_dir, flip_v=True, height=0.0, only=None, verbose=True,
-                 transform=None, tiles11=False):
+                 transform=None, tiles11=False, latlon=None):
         self.out_dir = out_dir
         self.flip_v = flip_v
         self.height = height
@@ -474,6 +474,7 @@ class OsgbToTiles:
         self.verbose = verbose
         self.transform_override = transform
         self.tiles11 = tiles11
+        self.latlon = latlon
         self.data_root = None
         self.transform = None
         self.visited = set()
@@ -489,16 +490,32 @@ class OsgbToTiles:
     def convert(self, osgb_root):
         t0 = time.time()
         meta = read_metadata(osgb_root)
-        zone, northern = parse_srs(meta['srs'])
         ox, oy, oz = meta['origin']
-        lat, lon = utm_to_latlon(ox, oy, zone, northern)
         if self.transform_override is not None:
             self.transform = self.transform_override
-        else:
+            self.log('定位: 复制参考 tileset.json 的 root.transform')
+        elif self.latlon is not None:
+            lat, lon = self.latlon
             self.transform = enu_to_ecef_transform(lat, lon, self.height)
-        self.log('SRS %s zone=%d%s origin=(%.1f, %.1f, %.1f) -> lat=%.6f lon=%.6f height=%.1f'
-                 % (meta['srs'], zone, 'N' if northern else 'S', ox, oy, oz,
-                    lat, lon, self.height))
+            self.log('定位: 手动经纬度 lat=%.6f lon=%.6f height=%.1f'
+                     % (lat, lon, self.height))
+        else:
+            try:
+                zone, northern = parse_srs(meta['srs'])
+            except OsgError:
+                # SRS=LOCAL（ContextCapture 重建时选了局部坐标系）或其它非 UTM 投影：
+                # 数据无真实地理参考，与 OBJ 一致降级为赤道 ENU，用户可填 --lat/--lon
+                # 或在系统内用「调整位置」功能移动。
+                self.transform = enu_to_ecef_transform(0.0, 0.0, self.height)
+                self.log('警告: SRS=%r 非投影坐标系（无地理参考），'
+                         '已降级为赤道 ENU 定位；可加 --lat/--lon 指定位置，'
+                         '或导入系统后用「调整位置」功能移动' % meta['srs'])
+            else:
+                lat, lon = utm_to_latlon(ox, oy, zone, northern)
+                self.transform = enu_to_ecef_transform(lat, lon, self.height)
+                self.log('SRS %s zone=%d%s origin=(%.1f, %.1f, %.1f) -> lat=%.6f lon=%.6f height=%.1f'
+                         % (meta['srs'], zone, 'N' if northern else 'S', ox, oy, oz,
+                            lat, lon, self.height))
 
         data = os.path.join(osgb_root, 'Data')
         self.data_root = data if os.path.isdir(data) else osgb_root
@@ -670,6 +687,8 @@ def main(argv=None):
                     help='不翻转纹理 V 坐标（默认翻转：OSG 纹理原点在左下，glTF 在左上）')
     ap.add_argument('--transform-from', default=None, metavar='TILESET',
                     help='从参考 tileset.json 复制 root.transform（与既有模型精确重合）')
+    ap.add_argument('--lat', type=float, default=None, help='ENU 原点纬度（SRS=LOCAL 无地理参考时用）')
+    ap.add_argument('--lon', type=float, default=None, help='ENU 原点经度')
     ap.add_argument('--only', default=None, help='只转换名称含此子串的根瓦片（调试）')
     ap.add_argument('--tiles-version', choices=['1.0', '1.1'], default='1.0',
                     help='3D Tiles 版本：1.0=b3dm（默认），1.1=glb 内容（需 Cesium 1.83+）')
@@ -677,9 +696,12 @@ def main(argv=None):
     transform = None
     if args.transform_from:
         transform = transform_from_tileset(args.transform_from)
+    latlon = (args.lat, args.lon) if (args.lat is not None and args.lon is not None) else None
+    if (args.lat is None) != (args.lon is None):
+        ap.error('--lat 与 --lon 需同时提供')
     conv = OsgbToTiles(args.out, flip_v=not args.no_flip_v, height=args.height,
                        only=args.only, transform=transform,
-                       tiles11=args.tiles_version == '1.1')
+                       tiles11=args.tiles_version == '1.1', latlon=latlon)
     conv.convert(args.input)
 
 
