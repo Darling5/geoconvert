@@ -890,7 +890,12 @@
     viewer.scene.primitives.add(tileset);
     t = { x: 0, y: 0, z: 0, heading: 0, pitch: 0, roll: 0, sx: 1, sy: 1, sz: 1 };
     applyTransform();
-    applyOpacity();  // tileset 重建，滑块当前值重应用到新对象
+    // Cesium 1.144：瓦片流式加载开始前应用含 alpha 的 style 会让 translucent
+    // 渲染管线永久失效（模型全消失，事后重设 style 也无法恢复）。
+    // 延迟到初始瓦片就绪后再应用透明度。
+    if (opacityPct < 100) {
+      tileset.initialTilesLoaded.addEventListener(applyOpacity);
+    }
     createGizmo();
     viewer.scene.camera.flyToBoundingSphere(tileset.boundingSphere, { duration: 1.2 });
     $('#pv-refresh').disabled = false;
