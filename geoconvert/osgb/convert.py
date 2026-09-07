@@ -28,6 +28,12 @@ WGS84_E2 = WGS84_F * (2 - WGS84_F)
 WGS84_EP2 = WGS84_E2 / (1 - WGS84_E2)
 UTM_K0 = 0.9996
 
+# 无 content 瓦片（tileset 根 / 多子分组壳）的 geometricError。
+# Cesium 遍历对空瓦片无 SSE 豁免：GE 小于视距对应值时既不渲染也不下钻，
+# 子树整体消失（缩放远模型不显示、缩放中瓦片跳变的根源）。
+# 取 1e7 保证地球尺度内（含最大拉远 ~3.2 万 km、最小窗口）SSE 恒大于 16。
+EMPTY_TILE_GE = 1.0e7
+
 
 # ---------- 坐标工具 ----------
 
@@ -453,6 +459,23 @@ def _safe_name(s):
     return s.replace('+', '')
 
 
+def _collapse_empty(t):
+    """剔除无 content 的空壳瓦片，其子级上提到父级 children，返回替代 t 的瓦片列表。
+
+    Cesium 遍历对空 content 瓦片无 SSE 豁免：GE 对应视距内不渲染也不下钻，
+    子树整体消失（缩放远模型不显示、缩放中瓦片跳变的根源）；空壳作为 REPLACE
+    父级的子级时还会让父级在子级流式加载期间跳过自身粗模（加载中空洞）。
+    上提后 REPLACE 父级能等待全部子级就绪再切换，粗模始终兜底。
+    """
+    kids = []
+    for c in (t.get('children') or ()):
+        kids.extend(_collapse_empty(c))
+    t['children'] = kids
+    if t['uri'] is None:
+        return kids
+    return [t]
+
+
 def _collect_geoms(nodes, matrix, out):
     for n in nodes:
         m = matrix
@@ -528,7 +551,7 @@ class OsgbToTiles:
         for i, rf in enumerate(roots):
             t = self._file_tile(rf, 0)
             if t:
-                tiles.append(t)
+                tiles.extend(_collapse_empty(t))
             if (i + 1) % 8 == 0:
                 self.log('  ...%d/%d 根瓦片 (%.0fs, %d b3dm)'
                          % (i + 1, len(roots), time.time() - t0, self.n_b3dm))
@@ -536,7 +559,9 @@ class OsgbToTiles:
             raise OsgError('没有成功转换的瓦片')
 
         box = _union_boxes(t['box'] for t in tiles)
-        ge = max(2.0 * _box_radius(box), max(t['ge'] for t in tiles))
+        # 根瓦片无 content：GE 必须足够大，否则 Cesium 在
+        # root SSE ≤ maximumScreenSpaceError（距离 ≈ GE×屏高/16）时直接整棵不渲染
+        ge = EMPTY_TILE_GE
         # 1.1：glb 内容为标准 Y-up，不带 1.0 前私有的 gltfUpAxis
         asset = {'version': '1.1'} if self.tiles11 else {'version': '1.0', 'gltfUpAxis': 'Z'}
         tileset = {
@@ -665,8 +690,10 @@ class OsgbToTiles:
 
     @staticmethod
     def _tile_json(t):
+        # 空 content 瓦片（理论上仅剩 tileset 根）GE 取大值保证任何视距都下钻
+        ge = t['ge'] if t['uri'] else EMPTY_TILE_GE
         d = {'boundingVolume': {'box': t['box']},
-             'geometricError': round(t['ge'], 4)}
+             'geometricError': round(ge, 4)}
         if t['refine']:
             d['refine'] = t['refine']
         if t['uri']:
