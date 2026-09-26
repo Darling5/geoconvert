@@ -4,7 +4,11 @@
 本地凭据存 license.json（与 exe 同目录，.gitignore 已排除，不随源码分发）；
 服务端为公司云服务器上的 geo-license 服务（HTTPS + 证书固定防中间人）。
 服务器地址可通过 license.json 的 server_url 字段覆盖（本地联调用 http://127.0.0.1:8900）。
+
+超管离线授权：exe 同目录放 Ed25519 签名的 admin.auth 即启用超管模式（转换不限次、
+不连服务器），签发工具与私钥在私有目录 geo-license-server/admin-auth/。
 """
+import base64
 import hashlib
 import hmac
 import json
@@ -50,6 +54,52 @@ fJkUVvrvnPFvsgcnZV194rYh
 -----END CERTIFICATE-----'''
 
 _state = {'path': None, 'data': None}
+
+# ---------------------------------------------------------------- 超管离线授权
+# admin.auth（exe 同目录）经 Ed25519 验签后启用超管模式：转换不限次、不连服务器。
+# 客户端只内置公钥（无私钥、无口令）——脱壳拿不到任何可用凭据；
+# 私钥与签发工具在私有目录 geo-license-server/admin-auth/，绝不进仓库与安装包。
+
+ADMIN_AUTH_FILE = 'admin.auth'
+ADMIN_PUBKEY = '5bd6a93ac3a6b7c6e567c6b53de97224fe71375c4fe28dcf12d86d2de0c01394'
+_ADMIN_QUOTA = {'code': 'ok', 'unlimited': True}
+
+
+def _admin_path():
+    if getattr(sys, 'frozen', False):
+        return os.path.join(os.path.dirname(sys.executable), ADMIN_AUTH_FILE)
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        ADMIN_AUTH_FILE)
+
+
+def admin_auth():
+    """验签 admin.auth。有效返回信息 dict，无效/不存在/损坏一律返回 None。
+    每次调用重读文件：放入即时生效，删除即时吊销，免重启。"""
+    try:
+        with open(_admin_path(), encoding='utf-8-sig') as f:
+            d = json.load(f)
+        if not isinstance(d, dict) or d.get('typ') != 'geoconvert-admin':
+            return None
+        v = int(d.get('v') or 0)
+        dev = str(d.get('dev') or '')
+        exp = int(d.get('exp') or 0)
+        iat = int(d.get('iat') or 0)
+        note = str(d.get('note') or '')
+        sig = str(d.get('sig') or '')
+        if v != 1 or not dev or not iat or not sig:
+            return None
+        if exp and exp < time.time():
+            return None
+        if dev != '*' and dev != str(_load().get('device_id') or ''):
+            return None
+        msg = '|'.join(['geoconvert-admin', str(v), dev, str(exp),
+                        str(iat), note]).encode('utf-8')
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        raw = base64.urlsafe_b64decode(sig + '=' * (-len(sig) % 4))
+        Ed25519PublicKey.from_public_bytes(bytes.fromhex(ADMIN_PUBKEY)).verify(raw, msg)
+        return {'username': '超级管理员', 'note': note, 'exp': exp}
+    except Exception:
+        return None
 
 
 def _license_path():
@@ -289,26 +339,35 @@ def _offline(extra=None):
 
 
 def status():
-    """登录态 + 最新配额（供界面常驻显示）。"""
+    """登录态 + 最新配额（供界面常驻显示）。admin.auth 有效时附超管标记。"""
     d = _load()
     if not d.get('token'):
-        return {'logged_in': False, 'online': True, 'username': '',
-                'quota': None}
-    if d.get('expires') and d['expires'] < time.time():
-        return {'logged_in': False, 'online': True, 'username': '', 'quota': None,
-                'error': '登录已过期，请重新登录'}
-    s, j = _http('/api/quota')
-    if s == 0:
-        return _offline()
-    if s == 401:
-        return {'logged_in': False, 'online': True, 'username': '', 'quota': None}
-    if s != 200:
-        return _offline({'error': j.get('error') or '服务器异常'})
-    _save_snap(d, j.get('quota'), j.get('status'))
-    _maybe_sync()
-    return {'logged_in': True, 'online': True, 'username': j.get('username') or '',
-            'status': j.get('status') or 'ok', 'quota': j.get('quota'),
-            'offline_pending': len(_load_ledger(d))}
+        out = {'logged_in': False, 'online': True, 'username': '', 'quota': None}
+    elif d.get('expires') and d['expires'] < time.time():
+        out = {'logged_in': False, 'online': True, 'username': '', 'quota': None,
+               'error': '登录已过期，请重新登录'}
+    else:
+        s, j = _http('/api/quota')
+        if s == 0:
+            out = _offline()
+        elif s == 401:
+            out = {'logged_in': False, 'online': True, 'username': '', 'quota': None}
+        elif s != 200:
+            out = _offline({'error': j.get('error') or '服务器异常'})
+        else:
+            _save_snap(d, j.get('quota'), j.get('status'))
+            _maybe_sync()
+            out = {'logged_in': True, 'online': True, 'username': j.get('username') or '',
+                   'status': j.get('status') or 'ok', 'quota': j.get('quota'),
+                   'offline_pending': len(_load_ledger(d))}
+    ad = admin_auth()
+    if ad:
+        out['admin'] = True
+        out['admin_note'] = ad.get('note') or ''
+        out['admin_exp'] = ad.get('exp') or 0
+        if not out.get('logged_in'):
+            out['username'] = ad['username']
+    return out
 
 
 def login(username, password):
@@ -363,7 +422,12 @@ def logout():
 
 def deduct(fmt, note=''):
     """转换开始前扣 1 次。返回 ok / code（login_required|offline|monthly_exhausted|…）。
-    断网时走离线兜底（本地记账，联网后自动补扣同步）。"""
+    超管授权文件有效：直接放行，不连服务器、不消耗任何额度。
+    普通账号断网时走离线兜底（本地记账，联网后自动补扣同步）。"""
+    ad = admin_auth()
+    if ad:
+        return {'ok': True, 'admin': True, 'tx_id': 'admin:%d' % int(time.time()),
+                'quota': dict(_ADMIN_QUOTA)}
     d = _load()
     if not d.get('token'):
         return {'ok': False, 'code': 'login_required', 'error': '请先登录'}
@@ -410,6 +474,8 @@ def refund(tx_id):
     """转换失败退还次数（后台线程调用，失败不影响主流程）。
     离线扣次（offline:nonce）→ 从本地账本删除该笔。"""
     tid = str(tx_id or '')
+    if tid.startswith('admin:'):
+        return True  # 超管转换无实际扣次，无需退还
     if tid.startswith('offline:'):
         with _ledger_lock:
             d = _load()

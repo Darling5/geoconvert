@@ -908,7 +908,7 @@ $('#br-pick').addEventListener('click', () => {
 
 // ---------- 转换 ----------
 $('#start').addEventListener('click', async () => {
-  if (!LIC.logged_in){ openLicModal('login'); return; }
+  if (!LIC.logged_in && !LIC.admin){ openLicModal('login'); return; }
   const body = {
     fmt, src: $('#input').value.trim(), dst: $('#output').value.trim(),
     locMode, lat: $('#lat').value.trim(), lon: $('#lon').value.trim(),
@@ -1154,9 +1154,16 @@ $('#reg-do').addEventListener('click', async () => {
 });
 
 // ---------- 账号 / 转换配额 ----------
-let LIC = {logged_in:false, online:true, username:'', quota:null};
+let LIC = {logged_in:false, online:true, username:'', quota:null, admin:false};
 function renderLic(){
   const box = $('#lic-box');
+  if (LIC.admin){
+    box.innerHTML = '<span class="lic-user">' +
+      '<span class="lic-quota" title="离线授权文件已启用：转换不限次数、不消耗账号额度、无需连接授权服务器。删除 exe 同目录的 admin.auth 即退出超管模式" style="cursor:help">🛡 超级管理员</span>' +
+      '<span class="lic-quota" id="lic-quota" title="点击刷新" style="cursor:pointer">转换 <em>不限</em></span></span>';
+    box.querySelector('#lic-quota').addEventListener('click', refreshLic);
+    return;
+  }
   if (!LIC.logged_in){
     box.innerHTML = '<button id="btn-login" class="primary">登录 / 注册</button>';
     $('#btn-login').addEventListener('click', () => openLicModal('login'));
@@ -1221,6 +1228,23 @@ function renderUserPage(){
   if (!card) return;
   $('#uc-profile').classList.toggle('hidden', !LIC.logged_in);
   $('#uc-passcard').classList.toggle('hidden', !LIC.logged_in);
+  if (LIC.admin){
+    const exp = LIC.admin_exp
+      ? '有效期至 ' + new Date(LIC.admin_exp * 1000).toLocaleDateString()
+      : '长期有效';
+    card.innerHTML = '<h2>超级管理员（离线授权）</h2>' +
+      '<p class="uc-tip">🛡 已启用离线授权文件 admin.auth：转换不限次数、不消耗账号额度、无需连接授权服务器（服务器维护/故障期间可正常使用）。<br>' +
+      '退出超管模式：删除 geoconvert.exe 同目录的 admin.auth 即可，即时生效。</p>' +
+      '<div class="uc-grid q3">' +
+      '<div class="uc-item"><small>授权备注</small><b>' + esc(LIC.admin_note || '-') + '</b></div>' +
+      '<div class="uc-item"><small>授权有效期</small><b>' + exp + '</b></div>' +
+      '<div class="uc-item"><small>转换额度</small><b>不限</b></div>' +
+      '</div>' +
+      '<div class="btnbar" style="margin:0"><button class="primary" id="uc-refresh">刷新</button></div>';
+    const b = $('#uc-refresh');
+    if (b) b.addEventListener('click', refreshLic);
+    return;
+  }
   if (!LIC.logged_in){
     card.innerHTML = '<h2>用户中心</h2>' +
       '<p class="uc-tip">登录账号即可获得免费转换额度：注册即送 <b>12 次/年 + 2 次/月</b>，转换失败自动退还，次数用完可提交联系方式获赠 5 次。已有账号？直接登录即可查看额度。</p>' +

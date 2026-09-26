@@ -20,3 +20,5 @@ tools/_t/
 config.json
 # 用户本地登录凭据（含授权令牌，不随仓库分发）
 license.json
+# 超管离线授权文件（Ed25519 签名，仅本机使用，绝不入库）
+admin.auth
