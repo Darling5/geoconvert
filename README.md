@@ -88,7 +88,7 @@ geoconvert/          Python 包（转换器核心 + Web UI）
   osgb/              OSGB → 3D Tiles（SRS 元数据定位）
   tifconv/           TIF → DOM 瓦片
   webui/             界面（index.html / preview.js / 离线 Cesium）
-tools/               测试、手册生成、图标等工具
+tools/               发版、手册生成、图标等工具
 installer.iss        Inno Setup 安装包脚本
 ```
 
