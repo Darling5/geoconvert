@@ -8,6 +8,10 @@ ROOT = SPECPATH
 hiddenimports = ['pyfqmr', 'scipy.sparse.csgraph', 'scipy.spatial', 'geoconvert.webui']
 hiddenimports += collect_submodules('scipy.sparse')
 hiddenimports += collect_submodules('PIL')
+# 超大 DOM 按段流式解码（tifconv/convert）。漏打包会静默回退 Pillow 路径，
+# 几十亿像素的影像必然 MemoryError —— 必须显式声明。
+hiddenimports += ['tifffile']
+hiddenimports += collect_submodules('tifffile')
 # pywebview（内嵌 WebView2 单窗口）及其 winforms/pythonnet 后端
 hiddenimports += collect_submodules('webview')
 hiddenimports += ['webview.platforms.winforms', 'webview.platforms.edgechromium']

@@ -528,11 +528,12 @@
         const cEdge = c2s(Cesium.Cartesian3.add(boxCenter,
           Cesium.Cartesian3.multiplyByScalar(cam.rightWC, h, new Cesium.Cartesian3()), new Cesium.Cartesian3()));
         if (!cEdge) continue;
-        const radius = Math.max(Math.hypot(cEdge.x - c.x, cEdge.y - c.y), 9);
+        const radius = Math.max(Math.hypot(cEdge.x - c.x, cEdge.y - c.y), 12);
         if (Math.hypot(pos.x - c.x, pos.y - c.y) <= radius) return key;
       }
 
-      const THRESH = 12;
+      // 箭头/圆环的屏幕命中容差（滚轮微调必须先悬停到轴；16px 让细轴更好抓）
+      const THRESH = 16;
       let best = null;
       let bestDist = THRESH;
 
@@ -876,6 +877,23 @@
     }
   }
 
+  // 打开预览后把相机瞬时定位到模型。不用 flyTo——flyTo 靠 scene.tweens 推进，
+  // 而 tween 由 Scene.render() 里的 requestAnimationFrame 驱动：标签页不可见/被节流时
+  // tween 永不推进，相机就停在 Cesium 默认远景（实测 2.5 万公里、经纬度还在北美），
+  // 模型和调整轴都看不见，滚轮微调也就无从谈起。lookAt 是同步的，任何环境即时生效。
+  function focusModel(retry) {
+    if (!tileset || !viewer) return;
+    const bs = tileset.boundingSphere;
+    if (!bs || !isFinite(bs.radius) || bs.radius <= 0) {
+      if ((retry || 0) < 20) setTimeout(() => focusModel((retry || 0) + 1), 150);
+      return;
+    }
+    const range = Math.max(bs.radius * 2.6, 30);
+    viewer.camera.lookAt(bs.center,
+      new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-45), range));
+    viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+  }
+
   async function loadTileset(dir) {
     await ensureEngine();
     curDir = dir.replace(/[\\/]+$/, '');
@@ -898,7 +916,9 @@
       tileset.initialTilesLoaded.addEventListener(applyOpacity);
     }
     createGizmo();
-    viewer.scene.camera.flyToBoundingSphere(tileset.boundingSphere, { duration: 1.2 });
+    focusModel();
+    const locEl = $('#pv-loc');
+    if (locEl) locEl.disabled = false;
     $('#pv-refresh').disabled = false;
     $('#pv-save').disabled = false;
     $('#pv-reset').disabled = false;
@@ -913,7 +933,7 @@
     $('#pv-open').disabled = true;
     try {
       await loadTileset(dir);
-      pvStatus('模型已加载。拖拽箭头平移 / 圆环旋转 / 轴上方块缩放 / 黄色方块斜移，悬停滚轮微调 0.01', 'ok');
+      pvStatus('模型已加载。拖拽箭头平移 / 圆环旋转 / 轴上方块缩放 / 黄色方块斜移；悬停到箭头、圆环或轴上小方块后滚动滚轮 = 0.01 微调', 'ok');
     } catch (e) {
       pvStatus('加载失败：' + e.message, 'err');
     } finally {
@@ -1058,13 +1078,32 @@
     applyTransform();
   }
 
-  function updateGeo() {
+  // force=true 时忽略焦点，强制把三格重同步为模型真实位置
+  function updateGeo(force) {
     const g = anchorGeo();
     for (const [id, dec] of [['pv-lon', 6], ['pv-lat', 6], ['pv-hgt', 2]]) {
       const el = $('#' + id);
-      if (!el || document.activeElement === el) continue;
+      if (!el || (!force && document.activeElement === el)) continue;
       el.value = g ? (id === 'pv-hgt' ? g.h : (id === 'pv-lon' ? g.lon : g.lat)).toFixed(dec) : '';
     }
+  }
+
+  // 经纬度/高程改为「提交式」：回车 / 失焦 / 点「定位」才生效。
+  // 旧实现逐字 input 生效 + 跳过焦点格，会出现「改经度模型动了、纬度格却跟着模型跑」的错乱，
+  // 且任一格中间态无效就静默不生效，没有任何反馈。
+  function commitGeoInputs() {
+    if (!tileset || !tileset.root) return;   // 未加载模型时不提交（避免输入框滚轮微调产生无意义报错）
+    const lonEl = $('#pv-lon'), latEl = $('#pv-lat'), hEl = $('#pv-hgt');
+    if (!lonEl || !latEl || !hEl) return;
+    const lon = parseFloat(lonEl.value), lat = parseFloat(latEl.value), h = parseFloat(hEl.value);
+    if (isNaN(lon) || isNaN(lat) || isNaN(h) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+      pvStatus('经纬度/高程无效（经度 ±180、纬度 ±90），已还原为模型当前位置', 'err');
+      updateGeo(true);
+      return;
+    }
+    setAnchorGeo(lon, lat, h);
+    updateGeo(true);
+    pvStatus('已定位到 ' + lon.toFixed(6) + ', ' + lat.toFixed(6) + ' @ ' + h.toFixed(2) + ' m', 'ok');
   }
 
   function bindInputs() {
@@ -1095,18 +1134,19 @@
         }
       });
     }
-    // 经纬度 + 高程输入：三格都有效才生效（改一格即把模型移到该位置）
-    const geoIn = () => {
-      const lon = parseFloat($('#pv-lon').value), lat = parseFloat($('#pv-lat').value);
-      const h = parseFloat($('#pv-hgt').value);
-      if (isNaN(lon) || isNaN(lat) || isNaN(h)) return;
-      if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return;
-      setAnchorGeo(lon, lat, h);
-    };
+    // 经纬度 + 高程：回车 / 失焦 / 「定位」按钮提交，三格都有效才生效
     for (const id of ['pv-lon', 'pv-lat', 'pv-hgt']) {
       const el = $('#' + id);
-      if (el) el.addEventListener('input', geoIn);
+      if (!el) continue;
+      el.addEventListener('change', commitGeoInputs);
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+      });
+      // change 与 blur 的先后顺序各浏览器不一致，延后一拍确保提交已完成再重同步
+      el.addEventListener('blur', () => setTimeout(() => updateGeo(true), 0));
     }
+    const locEl = $('#pv-loc');
+    if (locEl) locEl.addEventListener('click', commitGeoInputs);
   }
 
   function bind() {

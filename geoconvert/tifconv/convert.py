@@ -11,6 +11,9 @@ LOD 金字塔（纹理任一边超过 --cell-max 默认 2048px 时启用）：
 远视角只加载总览，中距离换中清块，拉近后按视野加载所在高清块；
 L2 网格 ≤2×2 时 L1 与总览同级，自动退化为两级；单块时为单平面。
 
+超大 DOM（几十亿像素）按段流式解码 + numpy 面积平均降采样，避免 Pillow 整幅
+load() 触发 MemoryError；常规尺寸影像仍走 Pillow LANCZOS。
+
 与 www/tif_to_plane.py 语义一致：rotation 北偏东顺时针为正，
 widthMeters 为影像对应的地面宽度（米），高度默认抬 1 米防深度冲突。
 """
@@ -22,14 +25,24 @@ import os
 import time
 import urllib.request
 
+import numpy as np
 from PIL import Image, ImageChops
 
 Image.MAX_IMAGE_PIXELS = None
+
+try:  # 超大 DOM 的按段流式解码；缺失时回退 Pillow 路径
+    import tifffile
+except ImportError:
+    tifffile = None
 
 from ..coords import enu_to_ecef_transform
 from ..gltf import GlbBuilder, to_b3dm
 
 BLACK_THRESHOLD = 16
+# 可流式解码的段压缩：无压缩 / Deflate（zlib，tifffile 原生支持，无需 imagecodecs）
+STREAM_COMPRESSIONS = (1, 8, 32946)
+# 流式降采样每次转 float32 的源行数上限（控制临时数组峰值）
+STREAM_CHUNK = 64
 
 
 def black_to_transparent(im, threshold):
@@ -107,6 +120,228 @@ def encode_image(im, fmt):
     return buf.getvalue()
 
 
+def _solo_int(v):
+    """TIFF 标签可能是标量或逐样本元组；取值唯一时返回该值，否则返回 None。"""
+    if isinstance(v, (tuple, list)):
+        vs = {int(x) for x in v}
+        return vs.pop() if len(vs) == 1 else None
+    return int(v)
+
+
+def _stream_meta(tif_path):
+    """读第一页的段表（瓦片/条带偏移）。不能流式解码时返回 None（转 Pillow 路径）。
+
+    仅接受「8 位、连续存储（planarconfig=1）、RGB/RGBA、段压缩为无压缩或 Deflate」的
+    影像；灰度/调色板/16 位/平面分离/需 imagecodecs 的 LZW·JPEG 段压缩一律回退。
+    """
+    if tifffile is None:
+        return None
+    with tifffile.TiffFile(tif_path) as tf:
+        p = tf.pages[0]
+        if (int(p.samplesperpixel) not in (3, 4) or int(p.planarconfig) != 1
+                or _solo_int(p.bitspersample) != 8
+                or int(p.photometric) != 2
+                or int(p.compression) not in STREAM_COMPRESSIONS):
+            return None
+        w, h = int(p.shape[1]), int(p.shape[0])
+        if p.is_tiled:
+            tw, th = int(p.tilewidth), int(p.tilelength)
+        else:  # 条带：一段即整行，按行宽当瓦片宽
+            tw, th = w, max(1, int(p.rowsperstrip) or h)
+        if w <= 0 or h <= 0 or tw <= 0 or th <= 0:
+            return None
+        offs = tuple(int(v) for v in p.dataoffsets)
+        cnts = tuple(int(v) for v in p.databytecounts)
+        if len(offs) != len(cnts) or len(offs) != _seg_grid(w, h, tw, th):
+            return None
+        return {'w': w, 'h': h, 'spp': int(p.samplesperpixel), 'tw': tw, 'th': th,
+                'offsets': offs, 'counts': cnts}
+
+
+def _seg_grid(w, h, tw, th):
+    """瓦片/条带的段总数（列数 × 行数）。"""
+    return ((w + tw - 1) // tw) * ((h + th - 1) // th)
+
+
+def _stream_rows(tif_path, meta):
+    """逐「瓦片行（或条带行）」流式解码，产出 (uint8 HWC 行块, 起始源行号)。
+
+    每次只把单个段的字节交给 page.decode，全程不整幅解码，峰值 ≈ 一行瓦片 + 输出图。
+    """
+    w, h, spp = meta['w'], meta['h'], meta['spp']
+    tw, th, offs, cnts = meta['tw'], meta['th'], meta['offsets'], meta['counts']
+    per_row = (w + tw - 1) // tw
+    with tifffile.TiffFile(tif_path) as tf:
+        decode = tf.pages[0].decode
+        with open(tif_path, 'rb') as fh:
+            for seg0 in range(0, len(offs), per_row):
+                ty = (seg0 // per_row) * th
+                y1 = min(ty + th, h)
+                band = np.empty((y1 - ty, w, spp), np.uint8)
+                for k in range(seg0, seg0 + per_row):
+                    fh.seek(offs[k])
+                    arr = decode(fh.read(cnts[k]), k)
+                    if isinstance(arr, tuple):
+                        arr = arr[0]
+                    arr = np.asarray(arr)
+                    while arr.ndim > 3:  # (1, 行, 列, 通道)
+                        arr = arr[0]
+                    r, c = (k // per_row) * th, (k % per_row) * tw
+                    r1, c1 = min(r + th, h), min(c + tw, w)
+                    band[r - ty:r1 - ty, c:c1] = arr[:r1 - r, :c1 - c]
+                yield band, ty
+
+
+class _AreaAcc:
+    """面积平均降采样累加器：按源行块喂入，不整幅解码。
+
+    RGBA 与 Pillow ≥9.1 的缩放语义一致——按预乘 alpha 平均（透明区不渗白边），
+    输出 alpha 为面积平均、RGB = Σ(rgb·a)/Σa。跨行块分箱无缝（共享边界像素）。
+    """
+
+    def __init__(self, w, h, spp, ow, oh):
+        self.spp, self.oi = spp, 0
+        self.bx = np.rint(np.linspace(0, w, ow + 1)).astype(np.int64)
+        self.by = np.rint(np.linspace(0, h, oh + 1)).astype(np.int64)
+        self.xw = (self.bx[1:] - self.bx[:-1]).astype(np.float64)  # 每输出列覆盖源列数
+        self.cur = np.zeros((ow, spp), np.float64)   # 当前输出行的通道和
+        self.cur_n = 0                               # 当前输出行已累计的源行数
+        self.out = np.empty((oh, ow, spp), np.uint8)
+        self.alpha0 = False                          # 源图存在全透明像素
+
+    def add_rows(self, rows, y0):
+        """喂入 y0 起的连续源行块（uint8，HWC）。"""
+        for cs in range(0, rows.shape[0], STREAM_CHUNK):
+            sub = rows[cs:cs + STREAM_CHUNK]
+            y = y0 + cs
+            if self.spp == 4:
+                a = sub[:, :, 3].astype(np.float32)
+                if not self.alpha0 and float(a.min()) == 0.0:
+                    self.alpha0 = True
+                pre = sub[:, :, :3].astype(np.float32)
+                pre *= a[:, :, None]  # 预乘：透明像素不把背景色平均进 RGB
+                asum = np.add.reduceat(a, self.bx[:-1], axis=1)
+                pre = np.add.reduceat(pre, self.bx[:-1], axis=1)
+            else:
+                asum = None
+                pre = np.add.reduceat(sub.astype(np.float32),
+                                      self.bx[:-1], axis=1)
+            for i in range(sub.shape[0]):
+                oy = int(np.searchsorted(self.by, y + i, side='right')) - 1
+                if oy != self.oi:  # 行映射单调：换输出行时先结算上一行
+                    self._flush()
+                    self.oi = oy
+                self.cur[:, :3] += pre[i]
+                if asum is not None:
+                    self.cur[:, 3] += asum[i]
+                self.cur_n += 1
+
+    def _flush(self):
+        if self.cur_n == 0:
+            return
+        area = self.cur_n * self.xw
+        if self.spp == 4:
+            a = self.cur[:, 3]
+            self.out[self.oi, :, 3] = np.clip(a / area, 0, 255).astype(np.uint8)
+            rgb = self.cur[:, :3] / np.where(a > 0, a, 1.0)[:, None]
+            self.out[self.oi, :, 0:3] = np.clip(rgb, 0, 255).astype(np.uint8)
+        else:
+            self.out[self.oi] = np.clip(
+                self.cur / area[:, None], 0, 255).astype(np.uint8)
+        self.cur[:] = 0.0
+        self.cur_n = 0
+
+    def finish(self):
+        self._flush()
+        return self.out
+
+
+def _area_resize(arr, ow, oh):
+    """numpy 面积平均降采样（预乘 alpha），供 L1/L0 级使用。"""
+    h, w, spp = arr.shape
+    acc = _AreaAcc(w, h, spp, ow, oh)
+    acc.add_rows(arr, 0)
+    return acc.finish()
+
+
+class _PilLevel:
+    """常规尺寸 TIF：Pillow 解码 → LANCZOS 降采样 → 收尾（旧路径语义不变）。"""
+
+    def __init__(self, im, tex_max, use_alpha, threshold, fmt):
+        w, h = im.size
+        scale = tex_max / max(w, h)
+        if scale < 1:
+            im = im.resize((max(1, round(w * scale)), max(1, round(h * scale))),
+                           Image.LANCZOS)
+        self.im = finish_level(im, use_alpha, threshold, fmt)
+        self.size = self.im.size
+
+    def crop(self, box):
+        return self.im.crop(box)
+
+    def resize(self, size, resample=Image.LANCZOS):
+        return self.im.resize(size, resample)
+
+    def encode(self, fmt):
+        return encode_image(self.im, fmt)
+
+
+class _NumpyLevel:
+    """超大 TIF：流式降采样得到的 L2（uint8 HWC），按块裁剪后再做边缘收尾。
+
+    整幅不转 PIL：Image.fromarray 只是挂载缓冲，首次 load()/paste 会整幅复制
+    （16384² RGBA ≈ 1 GB，复制即内存翻倍）。故收尾只作用于小尺寸的块。
+    """
+
+    def __init__(self, arr, use_alpha, threshold, fmt):
+        self.arr = arr
+        self.mode = 'RGBA' if arr.shape[2] == 4 else 'RGB'
+        self.use_alpha, self.threshold, self.fmt = use_alpha, threshold, fmt
+        self.size = (arr.shape[1], arr.shape[0])
+
+    def _finish(self, im):
+        if self.use_alpha:
+            # 流式输出已保证 a==0 处 RGB=0，无需整幅填黑
+            return im if self.fmt == 'png' else im.convert('RGB')
+        return finish_level(im, False, self.threshold, self.fmt)
+
+    def crop(self, box):
+        u0, v0, u1, v1 = (int(x) for x in box)
+        return self._finish(Image.frombytes(
+            self.mode, (u1 - u0, v1 - v0), self.arr[v0:v1, u0:u1].tobytes()))
+
+    def resize(self, size, resample=None):
+        ow, oh = int(size[0]), int(size[1])
+        return self._finish(Image.frombytes(
+            self.mode, (ow, oh), _area_resize(self.arr, ow, oh).tobytes()))
+
+    def encode(self, fmt):
+        return encode_image(self.crop((0, 0, self.size[0], self.size[1])), fmt)
+
+
+def open_level2(tif_path, tex_max, threshold=BLACK_THRESHOLD, fmt='png'):
+    """L2 高清级（长边 ≤ tex_max）→ (level, 原图宽, 原图高)。
+
+    超大 TIF 走 tifffile 按段流式解码 + numpy 面积平均降采样：Pillow 的 resize/crop
+    都会无条件整幅 load()，几十亿像素的 DOM 必然 MemoryError；其余情况保持 Pillow 路径。
+    """
+    try:
+        meta = _stream_meta(tif_path)
+    except Exception:  # 非 TIFF / 异常标签：交回 Pillow
+        meta = None
+    if meta is not None and tex_max < max(meta['w'], meta['h']):
+        scale = tex_max / max(meta['w'], meta['h'])
+        ow = max(1, round(meta['w'] * scale))
+        oh = max(1, round(meta['h'] * scale))
+        acc = _AreaAcc(meta['w'], meta['h'], meta['spp'], ow, oh)
+        for band, y0 in _stream_rows(tif_path, meta):
+            acc.add_rows(band, y0)
+        return _NumpyLevel(acc.finish(), acc.alpha0, threshold, fmt), meta['w'], meta['h']
+    base, use_alpha = open_base(tif_path)
+    w, h = base.size
+    return _PilLevel(base, tex_max, use_alpha, threshold, fmt), w, h
+
+
 def build_plane_b3dm(w_m, h_m, tex_bytes, tiles11=False):
     """单四边形贴图平面（ENU 原始坐标，中心在原点，z=0，法线朝上）。"""
     hw, hh = w_m / 2.0, h_m / 2.0
@@ -154,8 +389,9 @@ def convert_tif_plane(tif_path, out_dir, center_lon, center_lat, rotation=0.0,
     t0 = time.time()
     if height <= 0:
         height = 1.0  # 与地面（椭球高 0）完全共面会深度冲突
-    base, use_alpha = open_base(tif_path)
-    bw, bh = base.size
+    # L2 高清级（长边 ≤ tex_max）：超大 TIF 走流式解码，常规尺寸走 Pillow；
+    # 边缘透明处理随 L2 一起完成，L1/L0 从处理后的 L2 取材（缩放预乘，各级边缘一致）
+    l2, bw, bh = open_level2(tif_path, tex_max, threshold, fmt)
     h_m = width_meters * bh / bw
     hw, hh = width_meters / 2.0, h_m / 2.0
     os.makedirs(out_dir, exist_ok=True)
@@ -168,17 +404,6 @@ def convert_tif_plane(tif_path, out_dir, center_lon, center_lat, rotation=0.0,
     zhalf = max(1.0, width_meters * 0.0002)
     whole_box = [0, 0, 0, hw, 0, 0, 0, hh, 0, 0, 0, zhalf]
 
-    # L2 高清级：原分辨率上限 tex_max；边缘透明处理在本级做一次，
-    # L1/L0 从处理后的 L2 取材（RGBA 缩放内部预乘，各级边缘一致）
-    scale = tex_max / max(bw, bh)
-    if scale < 1:
-        l2 = base.resize((max(1, round(bw * scale)), max(1, round(bh * scale))),
-                         Image.LANCZOS)
-        base = None  # 释放整幅解码缓冲（超大图）
-    else:
-        l2 = base
-        base = None
-    l2 = finish_level(l2, use_alpha, threshold, fmt)
     l2w, l2h = l2.size
 
     # 整数网格边界（相邻块共享边界像素行/列，块间无缝）
@@ -206,7 +431,7 @@ def convert_tif_plane(tif_path, out_dir, center_lon, center_lat, rotation=0.0,
         return len(data)
 
     if nx == 1 and ny == 1:
-        tex = encode_image(l2, fmt)
+        tex = l2.encode(fmt)
         data = build_plane_b3dm(width_meters, h_m, tex, tiles11)
         with open(os.path.join(out_dir, 'plane.' + ext), 'wb') as f:
             f.write(data)

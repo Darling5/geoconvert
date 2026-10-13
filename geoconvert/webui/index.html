@@ -54,6 +54,16 @@ input,select{background:#020a1a;border:1px solid var(--line);color:var(--txt);
 input:focus,select:focus{border-color:var(--cy)}
 input.path{flex:1;font-family:Consolas,monospace}
 input.num{width:110px}
+/* 数值输入框的上下微调按钮（同主题色；输入框上滚动滚轮同样微调，步长默认 0.01） */
+.numw{display:inline-flex;align-items:stretch;border-radius:6px}
+.numw>input{border-top-right-radius:0;border-bottom-right-radius:0}
+.numbtns{display:flex;flex-direction:column;gap:1px;padding:1px;background:#08172a;
+  border:1px solid var(--line);border-left:0;border-radius:0 6px 6px 0}
+.numbtns button{flex:1 1 0;display:flex;align-items:center;justify-content:center;
+  width:18px;min-width:18px;padding:0;border:1px solid transparent;border-radius:3px;
+  background:#0e2233;color:var(--dim);font-size:9px;line-height:1}
+.numbtns button:hover:not(:disabled){background:#134e6a;color:var(--cy)}
+.numbtns button:active:not(:disabled){background:var(--cy);color:#04121a}
 button{background:#0e2233;border:1px solid var(--line2);color:var(--txt);border-radius:6px;
   padding:7px 16px;font-size:14px;cursor:pointer;transition:.15s}
 button:hover:not(:disabled){border-color:var(--cy);color:var(--cy)}
@@ -253,7 +263,7 @@ footer#bar b{color:var(--txt)}
       <option value="1.0">3D Tiles 1.0（b3dm，兼容性最广，推荐）</option>
       <option value="1.1">3D Tiles 1.1（glb 内容，标准更现代，需 Cesium 1.83+）</option>
     </select></div>
-    <div class="row" id="adv-obj"><label>切块阈值</label><input class="num" id="maxtris" value="250000"><label style="min-width:auto">单块最大三角形数（超出自动空间切块）</label></div>
+    <div class="row" id="adv-obj"><label>切块阈值</label><input class="num" id="maxtris" value="250000" data-step="1"><label style="min-width:auto">单块最大三角形数（超出自动空间切块）</label></div>
     <div class="row hidden" id="adv-tif"><label>纹理格式</label><select id="tex"><option value="png">png（无损）</option><option value="jpeg">jpeg（更小）</option></select></div>
   </section>
 
@@ -308,14 +318,15 @@ footer#bar b{color:var(--txt)}
       <button id="pv-reset" disabled>重置变换</button>
       <button id="pv-save" disabled>保存（烘焙进 tileset.json）</button>
       <label class="radio"><input type="checkbox" id="pv-show" checked>显示调整轴</label>
-      <span id="pv-status">红/绿/蓝箭头拖拽平移 · 彩色圆环旋转 · 轴上小方块缩放 · 半透明方块斜移 · 悬停滚轮 0.01 微调</span>
+      <span id="pv-status">红/绿/蓝箭头拖拽平移 · 彩色圆环旋转 · 轴上小方块缩放 · 半透明方块斜移 · 悬停到箭头/圆环/轴上小方块后滚动滚轮 0.01 微调</span>
     </div>
     <div class="pv-params">
-      <div class="pv-pg" title="模型底面中心的 WGS-84 经纬度与椭球高（高程 = 模型底部高程）；修改即把模型移动到该位置（等价换算为 ENU 平移）">
+      <div class="pv-pg" title="模型底面中心的 WGS-84 经纬度与椭球高（高程 = 模型底部高程）。改完按回车 / 点别处失焦 / 点「定位」提交，即把模型移动到该位置（等价换算为 ENU 平移）；输入非法会提示并还原">
         <b>定位 经纬度/高程</b>
         <label>经度<input class="num" id="pv-lon" style="width:104px" placeholder="—"></label>
         <label>纬度<input class="num" id="pv-lat" style="width:104px" placeholder="—"></label>
         <label>高程<input class="num" id="pv-hgt" style="width:84px" placeholder="—"></label>
+        <button id="pv-loc" disabled title="按上面填写的经纬度/高程移动模型（回车或失焦同样生效）">定位</button>
       </div>
       <div class="pv-pg"><b>平移 米</b>
         <label>X 东<input class="num" id="pv-x" value="0"></label>
@@ -560,6 +571,49 @@ $('#input').addEventListener('input', () => {
       if (j.fmt) setFmt(j.fmt);
     } catch(e){}
   }, 500);
+});
+
+// ---------- 数值输入框：上下微调按钮 + 滚轮微调（步长默认 0.01）----------
+function numStep(el){
+  const s = parseFloat(el.dataset.step);
+  return (isFinite(s) && s !== 0) ? s : 0.01;
+}
+function numFmt(v, step){
+  // 按步长小数位取整，避免 0.30000000000000004 这类浮点噪声
+  const dec = (String(step).split('.')[1] || '').length;
+  return dec ? v.toFixed(dec) : String(Math.round(v));
+}
+function numNudge(el, times){
+  const step = numStep(el);
+  const cur = parseFloat(el.value);
+  let next = (isFinite(cur) ? cur : 0) + times * step;
+  const mn = parseFloat(el.min), mx = parseFloat(el.max);
+  if (isFinite(mn) && next < mn) next = mn;
+  if (isFinite(mx) && next > mx) next = mx;
+  el.value = numFmt(next, step);
+  // 同时派发 input 与 change：各页面分别监听这两类事件（3D 预览的经纬度只认 change 提交）
+  el.dispatchEvent(new Event('input', {bubbles:true}));
+  el.dispatchEvent(new Event('change', {bubbles:true}));
+}
+$$('input.num').forEach(el => {
+  if (el.dataset.numbtn) return;
+  el.dataset.numbtn = '1';
+  const wrap = document.createElement('span'); wrap.className = 'numw';
+  const box = document.createElement('span'); box.className = 'numbtns';
+  [['▲', 1, '增加'], ['▼', -1, '减少']].forEach(([ch, d, tip]) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.tabIndex = -1; b.textContent = ch;
+    b.title = tip + ' ' + numStep(el) + '（在输入框上滚动滚轮同样微调）';
+    // 按钮在 <label> 内：preventDefault 挡掉 label 的焦点转发
+    b.addEventListener('click', ev => { ev.preventDefault(); numNudge(el, d); });
+    box.appendChild(b);
+  });
+  el.parentNode.insertBefore(wrap, el);
+  wrap.appendChild(el); wrap.appendChild(box);
+  el.addEventListener('wheel', ev => {
+    ev.preventDefault(); ev.stopPropagation();
+    numNudge(el, ev.deltaY < 0 ? 1 : -1);
+  }, {passive:false});
 });
 
 // ---------- 地图位置 → WGS-84 ----------

@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """geoconvert Web 图形界面：本地 HTTP 服务（127.0.0.1）+ 系统默认浏览器。
 
 双击 exe（无参数）→ 起服务并自动打开浏览器操作页。
@@ -26,7 +26,7 @@ from urllib.parse import urlparse, parse_qs, unquote, quote, urljoin
 from .params import build_argv, detect_format, validate
 from . import license as lic
 
-APP_VERSION = '1.5.16'
+APP_VERSION = '1.5.20'
 GITEE_API = 'https://gitee.com/api/v5/repos/darling5/geoconvert/releases/latest'
 GITEE_URL = 'https://gitee.com/darling5/geoconvert/releases/latest'
 RELEASES_API = 'https://api.github.com/repos/Darling5/geoconvert/releases/latest'
@@ -868,6 +868,36 @@ def run_gui(argv=None, force_browser=False):
     return 0
 
 
+def _force_dark_titlebar():
+    """让内嵌 WebView2 窗口的标题栏恒为网页主题的深色。
+
+    pywebview 的 winforms 后端会按「系统主题」强制标题栏配色（`update_title_bar_theme`）：
+    系统处于浅色模式时它硬设 DWMWA_USE_IMMERSIVE_DARK_MODE=0 —— 于是深色界面顶上一条白栏；
+    而且它在窗口 Shown/Activated/系统主题变化时反复套用，事后单独改一次会被它覆盖回去
+    （实测：单次 DwmSetWindowAttribute 返回 S_OK，截图仍是白栏）。
+    这里直接接管该后端的这两个方法：窗口恒按深色走，并指定与网页主题一致的标题栏颜色。
+    """
+    try:
+        from webview.platforms.winforms import BrowserView, DwmSetWindowAttribute
+    except Exception as e:
+        _safe_print('标题栏配色不可用（%s）' % e)
+        return False
+
+    Form = BrowserView.BrowserForm
+    Form.is_dark_theme = lambda self: True   # 让 pywebview 自身也按深色处理（含 Activated/主题变更回调）
+
+    def update_title_bar_theme(self):
+        h = self.Handle.ToInt32()
+        # 注意 COLORREF 是 0x00BBGGRR，不是 RGB
+        DwmSetWindowAttribute(h, 20, 1)             # DWMWA_USE_IMMERSIVE_DARK_MODE
+        DwmSetWindowAttribute(h, 35, 0x0022120B)    # DWMWA_CAPTION_COLOR ← 主题 --card  #0b1222
+        DwmSetWindowAttribute(h, 36, 0x00FFFEEC)    # DWMWA_TEXT_COLOR    ← 主题 --txt   #ecfeff
+        DwmSetWindowAttribute(h, 34, 0x00634E16)    # DWMWA_BORDER_COLOR  ← 主题 --line2 #164e63
+
+    Form.update_title_bar_theme = update_title_bar_theme
+    return True
+
+
 def _run_webview(url):
     """pywebview（WebView2）内嵌单窗口；返回 False 表示不可用需回退浏览器。"""
     try:
@@ -876,6 +906,8 @@ def _run_webview(url):
         _safe_print('内嵌窗口组件不可用（%s），回退系统浏览器' % e)
         return False
     try:
+        # 必须在窗口创建前接管标题栏配色（后端在 BrowserForm.__init__ 里就会套用一次）
+        _force_dark_titlebar()
         # 显式指定窗口/任务栏图标（winforms 后端不传 icon 时任务栏可能显示默认图标）
         icon = _resource_path('webui/appicon.ico')
         webview.create_window('geoconvert 图形界面', url,
