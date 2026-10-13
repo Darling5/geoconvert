@@ -235,14 +235,15 @@ footer#bar b{color:var(--txt)}
         <label class="radio"><input type="radio" name="loc" value="ts">参考 tileset（与既有模型重合）</label>
       </div>
       <div class="row" id="loc-ll"><label>纬度 lat</label><input class="num" id="lat" placeholder="42.19">
-        <label style="min-width:auto">经度 lon</label><input class="num" id="lon" placeholder="88.46"></div>
+        <label style="min-width:auto">经度 lon</label><input class="num" id="lon" placeholder="88.46">
+        <label style="min-width:auto">高程 m</label><input class="num" id="hgt" placeholder="0"></div>
       <div class="row hidden" id="loc-ts"><label>tileset</label><input class="path" id="ts" placeholder="参考模型的 tileset.json"><button id="btn-ts">浏览…</button><button class="openbtn" data-for="ts" title="在资源管理器中打开所在文件夹">打开</button></div>
     </div>
     <div id="geo-tif" class="hidden">
       <div class="row"><label>中心</label><input class="path" id="center" placeholder="影像中心点经纬度，例如 116.3,39.9（lon,lat）"></div>
       <div class="row"><label>宽度</label><input class="num" id="width" value="3000"><label style="min-width:auto">米（东西向真实地面距离）</label></div>
     </div>
-    <div class="row"><label>离地高度</label><input class="num" id="height" value="0"><label style="min-width:auto">米（TIF 建议 0.1 避免与地面重影）</label></div>
+    <div class="row hidden" id="row-height"><label>离地高度</label><input class="num" id="height" value="0"><label style="min-width:auto">米（TIF 建议 0.1 避免与地面重影）</label></div>
     <div class="hint" id="geo-hint"></div>
   </section>
 
@@ -282,7 +283,7 @@ footer#bar b{color:var(--txt)}
       <button id="cc-use-tif">填入 TIF 中心</button>
       <button id="cc-copy">复制</button></div>
     <div class="hint">自动识别来源并转 WGS-84：高德/腾讯 = GCJ-02，百度 = BD-09，必应/Google = WGS-84；
-      高德短链（surl.amap.com）自动展开；链接只有地址没有坐标时自动联网检索（天地图）。
+      高德短链（surl.amap.com）自动展开；高德 POI 页链接（ditu.amap.com/place/B0xxx，需在「3D 预览」页配置高德 Key）；链接只有地址没有坐标时自动联网检索（天地图）。
       纯坐标串按 <select id="cc-src" class="cc-src">
         <option value="gcj02">GCJ-02（高德/腾讯坐标）</option>
         <option value="wgs84">WGS-84（GPS 坐标）</option>
@@ -310,6 +311,12 @@ footer#bar b{color:var(--txt)}
       <span id="pv-status">红/绿/蓝箭头拖拽平移 · 彩色圆环旋转 · 轴上小方块缩放 · 半透明方块斜移 · 悬停滚轮 0.01 微调</span>
     </div>
     <div class="pv-params">
+      <div class="pv-pg" title="模型底面中心的 WGS-84 经纬度与椭球高（高程 = 模型底部高程）；修改即把模型移动到该位置（等价换算为 ENU 平移）">
+        <b>定位 经纬度/高程</b>
+        <label>经度<input class="num" id="pv-lon" style="width:104px" placeholder="—"></label>
+        <label>纬度<input class="num" id="pv-lat" style="width:104px" placeholder="—"></label>
+        <label>高程<input class="num" id="pv-hgt" style="width:84px" placeholder="—"></label>
+      </div>
       <div class="pv-pg"><b>平移 米</b>
         <label>X 东<input class="num" id="pv-x" value="0"></label>
         <label>Y 北<input class="num" id="pv-y" value="0"></label>
@@ -342,6 +349,10 @@ footer#bar b{color:var(--txt)}
       <input class="path" id="tdt-key" placeholder="选填。天地图影像/中文注记需此 key（tianditu.gov.cn 免费申请），留空则只用 ArcGIS 卫星图" style="max-width:560px">
       <button id="tdt-save">保存 Key</button>
       <span id="tdt-status" style="color:var(--mut);font-size:12.5px"></span></div>
+    <div class="row" style="margin-top:10px"><label>高德 Key</label>
+      <input class="path" id="amap-key" placeholder="选填。解析高德 POI 链接（ditu.amap.com/place/B0xxx）需此 key：lbs.amap.com 免费注册 → 控制台创建「Web服务」类型 Key" style="max-width:560px">
+      <button id="amap-save">保存 Key</button>
+      <span id="amap-status" style="color:var(--mut);font-size:12.5px"></span></div>
     </section>
     </div><!-- /page-preview -->
 
@@ -519,11 +530,13 @@ function setFmt(f){
   $('#geo-tif').classList.toggle('hidden', objosgb);
   $('#adv-obj').classList.toggle('hidden', f !== 'OBJ');
   $('#adv-tif').classList.toggle('hidden', f !== 'TIF');
-  $('#height').value = objosgb ? '0' : '0.1';
+  $('#height').value = '0.1';
+  $('#hgt').value = '0';
+  $('#row-height').classList.toggle('hidden', objosgb);
   $('#geo-hint').textContent = ({
-    OBJ: '留空经纬度 = 赤道 ENU，导入系统后用「调整位置」功能移动',
-    OSGB: '留空 = 自动读取数据目录 metadata.xml 定位',
-    TIF: '中心 = 影像中心点 WGS-84 经纬度，地面宽度 = 影像覆盖的东西向真实米数'
+    OBJ: '经纬度 = ENU 原点（WGS-84），高程 = 原点椭球高；留空经纬度 = 赤道 ENU，导入系统后用「调整位置」功能移动',
+    OSGB: '留空 = 自动读取数据目录 metadata.xml 定位（含高程），填经纬度则覆盖；高程 = ENU 原点椭球高',
+    TIF: '中心 = 影像中心点 WGS-84 经纬度，地面宽度 = 影像覆盖的东西向真实米数，离地高度一般 0.1 避免重影'
   })[f];
 }
 $$('#fmts .fmt').forEach(el => el.addEventListener('click', () => setFmt(el.dataset.fmt)));
@@ -654,14 +667,27 @@ function ccParse(input){
     return tryKeys(['q', 'll', 'center'], 'google', 'wgs84');
   }
   if (host.includes('amap.com')){
-    // www.amap.com/?p=POI_ID,lat,lng,名称,地址 —— 高德分享点标记，GCJ-02，lat 在前
+    // www.amap.com/?p=POI_ID,lat,lng,名称,地址 —— 高德分享点标记，GCJ-02
+    // 顺序自适应：境内经度恒 >73、纬度 <54，|a|>90 即可判定 a 为经度
     const p = q.get('p');
     if (p){
       const parts = p.split(',');
-      const lat = parseFloat(parts[1]), lng = parseFloat(parts[2]);
+      let lat = parseFloat(parts[1]), lng = parseFloat(parts[2]);
+      if (Math.abs(lat) > 90 && Math.abs(lng) <= 90){ const t = lat; lat = lng; lng = t; }
       if (!isNaN(lat) && !isNaN(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180)
         return {lon: lng, lat, vendor: 'amap', source: 'gcj02'};
+      // ?p= 只有 POI ID 无坐标：转 POI 查询
+      const pid0 = (parts[0] || '').trim();
+      if (/^[A-Za-z0-9]{6,20}$/.test(pid0))
+        return {vendor: 'amap-poi', poi: pid0, source: 'gcj02'};
     }
+    // 搜索页带 POI ID：ditu.amap.com/search?query=xxx&poiid=B036707CQT
+    const pid = q.get('poiid');
+    if (pid && /^[A-Za-z0-9]{6,20}$/.test(pid))
+      return {vendor: 'amap-poi', poi: pid, source: 'gcj02'};
+    // POI 详情页：ditu.amap.com/place/B036707CQT、www.amap.com/detail/B0xxx —— 只有 POI ID
+    const pm = url.pathname.match(/^\/(?:place|detail)\/([A-Za-z0-9]{6,20})\/?$/);
+    if (pm) return {vendor: 'amap-poi', poi: pm[1], source: 'gcj02'};
     return tryKeys(['position', 'marker', 'pos', 'lon', 'coords', 'coordinate'], 'amap', 'gcj02');
   }
   if (host.includes('qq.com'))
@@ -690,6 +716,15 @@ function ccAddrFromUrl(url){
     return t;
   } catch(e){ return null; }
 }
+async function resolveAmapPoi(p){
+  // 高德 POI 详情页链接（place/detail/POI_ID）→ 后端官方 API 查坐标（需高德 Key）
+  if (!p || p.vendor !== 'amap-poi') return p;
+  const r = await fetch('/api/amap-poi?id=' + encodeURIComponent(p.poi));
+  const j = await r.json().catch(() => ({}));
+  if (j.lon) return {lon: j.lon, lat: j.lat, vendor: 'amap', source: 'gcj02',
+                     addr: j.name || j.addr || ''};
+  throw new Error(j.error || '高德 POI 查询失败');
+}
 async function ccConvert(){
   const text = $('#cc-in').value.trim();
   const mySeq = ++ccSeq;
@@ -715,6 +750,12 @@ async function ccConvert(){
     if (window.CCGlobe) CCGlobe.mark(w[0], w[1], parsed.addr || '');
   };
   let parsed = ccParse(text);
+  if (parsed && parsed.vendor === 'amap-poi'){
+    show('<span class="src">解析中</span>正在查询高德 POI 坐标…');
+    try { parsed = await resolveAmapPoi(parsed); }
+    catch(e){ if (mySeq === ccSeq) show('<span class="src">无法识别</span>' + e.message); return; }
+    return finish(parsed);
+  }
   if (parsed) return finish(parsed);
   // URL 但直接解析失败：先展开短链（高德 surl / 腾讯 / 百度短链）再解析
   if (/^https?:\/\//i.test(text)){
@@ -725,6 +766,12 @@ async function ccConvert(){
       if (mySeq !== ccSeq) return;
       if (j.url && j.url !== text) parsed = ccParse(j.url);
     } catch(e){}
+    if (parsed && parsed.vendor === 'amap-poi'){
+      show('<span class="src">解析中</span>正在查询高德 POI 坐标…');
+      try { parsed = await resolveAmapPoi(parsed); }
+      catch(e){ if (mySeq === ccSeq) show('<span class="src">无法识别</span>' + e.message); return; }
+      return finish(parsed);
+    }
     if (parsed) return finish(parsed);
     // 仍无坐标：提取地址文本走天地图地理编码（必应/Google/高德搜索链接）
     const addr = ccAddrFromUrl(text);
@@ -913,7 +960,8 @@ $('#start').addEventListener('click', async () => {
     fmt, src: $('#input').value.trim(), dst: $('#output').value.trim(),
     locMode, lat: $('#lat').value.trim(), lon: $('#lon').value.trim(),
     ts: $('#ts').value.trim(), center: $('#center').value.trim(),
-    width: $('#width').value.trim(), height: $('#height').value.trim(),
+    width: $('#width').value.trim(),
+    height: (fmt === 'TIF' ? $('#height').value : $('#hgt').value).trim(),
     maxTris: $('#maxtris').value.trim(), texFmt: $('#tex').value,
     tiles: $('#tilesver').value
   };
@@ -960,6 +1008,7 @@ $$('button.openbtn').forEach(b => b.addEventListener('click', async () => {
     if (r.ok){
       const j = await r.json();
       $('#tdt-key').value = j.tianditu_key || '';
+      $('#amap-key').value = j.amap_key || '';
       if (j.version) $('#uc-ver').textContent = 'v' + j.version;
     }
   } catch(e){ /* 忽略 */ }
@@ -1007,6 +1056,15 @@ $('#tdt-save').addEventListener('click', async () => {
     $('#tdt-status').textContent = (r.ok && !j.error)
       ? '已保存，刷新页面后打开 3D 预览生效' : (j.error || '保存失败');
   } catch(e){ $('#tdt-status').textContent = '无法连接服务：' + e; }
+});
+$('#amap-save').addEventListener('click', async () => {
+  try {
+    const r = await fetch('/api/config', {method:'POST',
+      body: JSON.stringify({amap_key: $('#amap-key').value.trim()})});
+    const j = await r.json().catch(() => ({}));
+    $('#amap-status').textContent = (r.ok && !j.error)
+      ? '已保存，粘贴高德 place 链接即可解析坐标' : (j.error || '保存失败');
+  } catch(e){ $('#amap-status').textContent = '无法连接服务：' + e; }
 });
 
 function setControls(){

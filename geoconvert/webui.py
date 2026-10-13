@@ -26,7 +26,7 @@ from urllib.parse import urlparse, parse_qs, unquote, quote, urljoin
 from .params import build_argv, detect_format, validate
 from . import license as lic
 
-APP_VERSION = '1.5.15'
+APP_VERSION = '1.5.16'
 GITEE_API = 'https://gitee.com/api/v5/repos/darling5/geoconvert/releases/latest'
 GITEE_URL = 'https://gitee.com/darling5/geoconvert/releases/latest'
 RELEASES_API = 'https://api.github.com/repos/Darling5/geoconvert/releases/latest'
@@ -168,6 +168,50 @@ def geocode_addr(addr):
     return {'error': '地址检索无结果，请换个写法（如加上城市名，例：深圳 臣田工业区36）'}
 
 
+def amap_poi(poi_id):
+    """高德 POI ID（ditu.amap.com/place/B0xxx 链接）→ GCJ-02 坐标。
+
+    高德网页端 POI 数据接口有阿里风控（x5sec 滑块），后端直调不可行；
+    官方 Web 服务 API（restapi.amap.com）稳定合规但需用户自己的 key
+    （lbs.amap.com 免费注册，控制台创建「Web服务」类型 Key）。
+    """
+    pid = (poi_id or '').strip()
+    if not re.match(r'^[A-Za-z0-9]{6,20}$', pid):
+        return {'error': 'POI ID 格式不正确'}
+    key = (load_config().get('amap_key') or '').strip()
+    if not key:
+        return {'error': '解析高德 place 链接需先配置高德 Key（免费）：'
+                         'lbs.amap.com 注册 → 控制台「创建新Key」类型选「Web服务」→ '
+                         '把 Key 填到「3D 预览」页的「高德 Key」并保存'}
+    api = ('https://restapi.amap.com/v3/place/detail?id=%s&key=%s'
+           % (quote(pid), quote(key)))
+    try:
+        req = urllib.request.Request(api, headers=_UA)
+        with _direct_opener.open(req, timeout=10) as r:
+            j = json.loads(r.read().decode('utf-8'))
+    except Exception as e:
+        return {'error': '高德接口请求失败（网络不可用）：%s' % e}
+    if str(j.get('status')) == '1':
+        pois = j.get('pois') or []
+        if pois:
+            m = re.match(r'^(\d+(?:\.\d+)?),(\d+(?:\.\d+)?)$',
+                         str(pois[0].get('location') or ''))
+            if m:
+                return {'lon': float(m.group(1)), 'lat': float(m.group(2)),
+                        'name': str(pois[0].get('name') or ''),
+                        'addr': str(pois[0].get('address') or ''),
+                        'vendor': 'amap'}
+    info = str(j.get('info') or '查询失败')
+    code = str(j.get('infocode') or '')
+    if code == '10001':
+        return {'error': '高德 Key 无效，请检查「3D 预览」页保存的高德 Key'}
+    if code == '10003':
+        return {'error': '高德 Key 今日配额已用完，请明天再试或更换 Key'}
+    if code == '10044':
+        return {'error': '该 POI 不存在或已下线，请确认链接'}
+    return {'error': '高德查询失败：%s' % info}
+
+
 class State:
     def __init__(self):
         self.lock = threading.Lock()
@@ -280,12 +324,13 @@ def load_config():
             cfg = json.load(f)
         if isinstance(cfg, dict):
             return {'tianditu_key': str(cfg.get('tianditu_key') or ''),
+                    'amap_key': str(cfg.get('amap_key') or ''),
                     'reg_json': str(cfg.get('reg_json') or ''),
                     'reg_root': str(cfg.get('reg_root') or ''),
                     'version': APP_VERSION}
     except (OSError, ValueError):
         pass
-    return {'tianditu_key': '', 'reg_json': '', 'reg_root': '',
+    return {'tianditu_key': '', 'amap_key': '', 'reg_json': '', 'reg_root': '',
             'version': APP_VERSION}
 
 
@@ -302,6 +347,8 @@ def save_config(cfg):
     merged = dict(old)
     if 'tianditu_key' in cfg:
         merged['tianditu_key'] = str(cfg.get('tianditu_key') or '').strip()
+    if 'amap_key' in cfg:
+        merged['amap_key'] = str(cfg.get('amap_key') or '').strip()
     if 'reg_json' in cfg:
         merged['reg_json'] = str(cfg.get('reg_json') or '').strip()
     if 'reg_root' in cfg:
@@ -624,6 +671,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, expand_share_url((q.get('url') or [''])[0]))
         elif u.path == '/api/geocode':
             self._send(200, geocode_addr((q.get('addr') or [''])[0]))
+        elif u.path == '/api/amap-poi':
+            self._send(200, amap_poi((q.get('id') or [''])[0]))
         elif u.path == '/api/license/status':
             self._send(200, lic.status())
         else:
@@ -733,11 +782,17 @@ class Handler(BaseHTTPRequestHandler):
                              'reg_root': str(body.get('root') or '')})
                 self._send(200, vals)
         elif u.path == '/api/config':
-            key = str(body.get('tianditu_key') or '').strip()
-            if len(key) > 128:
+            payload = {}
+            if 'tianditu_key' in body:
+                payload['tianditu_key'] = str(body.get('tianditu_key') or '').strip()
+            if 'amap_key' in body:
+                payload['amap_key'] = str(body.get('amap_key') or '').strip()
+            if not payload:
+                self._send(400, {'error': '无可保存字段'})
+            elif any(len(v) > 128 for v in payload.values()):
                 self._send(400, {'error': 'key 过长'})
             else:
-                err = save_config({'tianditu_key': key})
+                err = save_config(payload)
                 self._send(200 if not err else 500,
                            {'ok': not err, 'error': err})
         elif u.path == '/api/license/login':

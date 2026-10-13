@@ -137,7 +137,7 @@ def validate(fmt, src, dst, loc_mode='ll', lat='', lon='', ts='', center='', wid
         try:
             float(height)
         except ValueError:
-            return None, '离地高度必须是数字'
+            return None, '高程必须是数字'
     if max_tris:
         try:
             int(max_tris)

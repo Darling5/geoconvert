@@ -28,7 +28,18 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # 排除与本工具无关的重型 ML/GPU 包。根因：scipy._lib.array_api_compat.common._helpers
+    # 在 `if TYPE_CHECKING:` 里写了 import torch（运行时永不执行），但 PyInstaller 静态
+    # 分析仍会跟随，进而把整套 CUDA torch（~4GB）+ transformers/accelerate 拖进 _internal，
+    # 安装包从 ~50MB 膨胀到 1.5GB。geoconvert 运行期从不 import 这些包，排除安全。
+    excludes=[
+        'torch', 'torchvision', 'torchaudio', 'torchao', 'torch_xla', 'functorch',
+        'transformers', 'accelerate', 'datasets', 'deepspeed', 'msamp',
+        'safetensors', 'huggingface_hub', 'tokenizers', 'sentencepiece',
+        'peft', 'trl', 'optimum', 'einops', 'bitsandbytes', 'lomo_optim',
+        'tensorflow', 'keras', 'jax', 'jaxlib', 'onnx', 'onnxruntime',
+        'cv2', 'sympy', 'networkx',
+    ],
     noarchive=False,
     optimize=0,
 )

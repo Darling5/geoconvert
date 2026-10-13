@@ -52,6 +52,7 @@
     }
     syncInputs();
     updateElev();
+    updateGeo();
   }
 
   function bakedMatrix() {
@@ -1011,6 +1012,61 @@
     pvStatus('已贴地：模型最低点对齐到地面（Z 平移 ' + (t.z >= 0 ? '+' : '') + t.z.toFixed(2) + ' 米），记得保存烘焙', 'ok');
   }
 
+  // ===== 模型定位（经纬度 + 高程，WGS-84）=====
+  // 锚点取包围盒**底面中心**（模型底部中心，而不是包围盒中心）——用户填的高程 = 模型底面高程。
+  // A 对任意点 a 有 A×a = (pivot+t) + S·R_rot·(a−pivot)，故底面中心 q = b − pivot 的世界位置
+  // = R_root × (pivot + t + S·R_rot·q)；反解 t = local − pivot − S·R_rot·q 即把底面精确移到目标经纬度高程。
+  // pivot 仍为包围盒中心（gizmo 的旋转/缩放中心），语义不改。
+
+  // 底面中心（局部系）＝ 包围盒中心 − 第三半轴向量（ENU 轴对齐盒的 box[9..11] = (0,0,hz)）
+  function bottomCenterLocal() {
+    const c = new Cesium.Cartesian3(pivot[0] || 0, pivot[1] || 0, pivot[2] || 0);
+    if (!bvBox) return c;
+    return new Cesium.Cartesian3(
+      c.x - (bvBox[9] || 0), c.y - (bvBox[10] || 0), c.z - (bvBox[11] || 0));
+  }
+
+  function anchorGeo() {
+    if (!tileset || !tileset.root) return null;
+    const M = Cesium.Matrix4.multiply(tileset.modelMatrix, tileset.root.transform,
+      new Cesium.Matrix4());
+    const w = Cesium.Matrix4.multiplyByPoint(M, bottomCenterLocal(), new Cesium.Cartesian3());
+    const c = Cesium.Cartographic.fromCartesian(w);
+    if (!c) return null;
+    return { lon: Cesium.Math.toDegrees(c.longitude),
+             lat: Cesium.Math.toDegrees(c.latitude), h: c.height };
+  }
+
+  function setAnchorGeo(lon, lat, h) {
+    if (!tileset || !tileset.root) return;
+    const R = tileset.root.transform;
+    const target = Cesium.Cartesian3.fromDegrees(lon, lat, h);
+    const local = Cesium.Matrix4.multiplyByPoint(
+      Cesium.Matrix4.inverse(R, new Cesium.Matrix4()), target, new Cesium.Cartesian3());
+    // R_rot·q 再逐轴乘缩放 = S·R_rot·q，必须计入反解（绕 pivot 旋转/缩放后底面会偏离 pivot+q）
+    const rot = Cesium.Matrix3.fromHeadingPitchRoll(new Cesium.HeadingPitchRoll(
+      Cesium.Math.toRadians(t.heading || 0),
+      Cesium.Math.toRadians(t.pitch || 0),
+      Cesium.Math.toRadians(t.roll || 0)));
+    const pv = new Cesium.Cartesian3(pivot[0] || 0, pivot[1] || 0, pivot[2] || 0);
+    const q = Cesium.Cartesian3.subtract(bottomCenterLocal(), pv, new Cesium.Cartesian3());
+    const so = Cesium.Matrix3.multiplyByVector(rot, q, new Cesium.Cartesian3());
+    t = { ...t,
+          x: round2(local.x - pv.x - so.x * (t.sx ?? 1)),
+          y: round2(local.y - pv.y - so.y * (t.sy ?? 1)),
+          z: round2(local.z - pv.z - so.z * (t.sz ?? 1)) };
+    applyTransform();
+  }
+
+  function updateGeo() {
+    const g = anchorGeo();
+    for (const [id, dec] of [['pv-lon', 6], ['pv-lat', 6], ['pv-hgt', 2]]) {
+      const el = $('#' + id);
+      if (!el || document.activeElement === el) continue;
+      el.value = g ? (id === 'pv-hgt' ? g.h : (id === 'pv-lon' ? g.lon : g.lat)).toFixed(dec) : '';
+    }
+  }
+
   function bindInputs() {
     for (const k of ['x', 'y', 'z', 'heading', 'pitch', 'roll', 'sx', 'sy', 'sz']) {
       const el = $('#pv-' + k);
@@ -1038,6 +1094,18 @@
           applyTransform();
         }
       });
+    }
+    // 经纬度 + 高程输入：三格都有效才生效（改一格即把模型移到该位置）
+    const geoIn = () => {
+      const lon = parseFloat($('#pv-lon').value), lat = parseFloat($('#pv-lat').value);
+      const h = parseFloat($('#pv-hgt').value);
+      if (isNaN(lon) || isNaN(lat) || isNaN(h)) return;
+      if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return;
+      setAnchorGeo(lon, lat, h);
+    };
+    for (const id of ['pv-lon', 'pv-lat', 'pv-hgt']) {
+      const el = $('#' + id);
+      if (el) el.addEventListener('input', geoIn);
     }
   }
 
