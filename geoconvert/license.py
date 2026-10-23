@@ -21,7 +21,7 @@ import time
 import urllib.error
 import urllib.request
 
-LICENSE_SERVER = 'https://103.78.229.17:8443'
+LICENSE_SERVER = 'https://119.91.21.215:8443'
 TIMEOUT = 12
 
 # 离线兜底：断网时按最近一次在线配额快照本地扣次（上限 OFFLINE_MAX 笔），
